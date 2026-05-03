@@ -1,0 +1,22 @@
+Thumbs.db
+.gradle
+build
+out
+.idea/*
+!.idea/scopes
+Xplat/logs/
+
+## ForgeGradle
+/run/*
+!/run/patchouli_books/
+!/run/resourcepacks/
+
+### OSX (adds a lot of garbage)###
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Java
+Fabric/bin/
+Xplat/bin/
+NeoForge/bin/

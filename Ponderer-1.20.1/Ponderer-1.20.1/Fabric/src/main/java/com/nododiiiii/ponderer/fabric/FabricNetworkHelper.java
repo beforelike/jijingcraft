@@ -1,0 +1,175 @@
+package com.nododiiiii.ponderer.fabric;
+
+import com.nododiiiii.ponderer.Ponderer;
+import com.nododiiiii.ponderer.network.*;
+import com.nododiiiii.ponderer.platform.services.NetworkHelper;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerPlayer;
+
+/**
+ * Fabric implementation of NetworkHelper using Fabric Networking API.
+ */
+public class FabricNetworkHelper implements NetworkHelper {
+
+    // Channel IDs
+    private static final ResourceLocation UPLOAD_SCENE = new ResourceLocation(Ponderer.MODID, "upload_scene");
+    private static final ResourceLocation SYNC_REQUEST = new ResourceLocation(Ponderer.MODID, "sync_request");
+    private static final ResourceLocation DOWNLOAD_STRUCTURE = new ResourceLocation(Ponderer.MODID, "download_structure");
+    private static final ResourceLocation CAPTURE_BLOCK_ENTITY_NBT_REQUEST = new ResourceLocation(Ponderer.MODID, "capture_block_entity_nbt_request");
+    private static final ResourceLocation PERMISSION_LIST_REQUEST = new ResourceLocation(Ponderer.MODID, "permission_list_request");
+    private static final ResourceLocation PERMISSION_UPDATE = new ResourceLocation(Ponderer.MODID, "permission_update");
+    private static final ResourceLocation BLUEPRINT_CONFIG_REQUEST = new ResourceLocation(Ponderer.MODID, "blueprint_config_request");
+    private static final ResourceLocation BLUEPRINT_CONFIG_UPDATE = new ResourceLocation(Ponderer.MODID, "blueprint_config_update");
+    private static final ResourceLocation SYNC_RESPONSE = new ResourceLocation(Ponderer.MODID, "sync_response");
+    private static final ResourceLocation DOWNLOAD_STRUCTURE_RESULT = new ResourceLocation(Ponderer.MODID, "download_result");
+    private static final ResourceLocation UPLOAD_RESPONSE = new ResourceLocation(Ponderer.MODID, "upload_response");
+    private static final ResourceLocation CAPTURE_BLOCK_ENTITY_NBT_RESPONSE = new ResourceLocation(Ponderer.MODID, "capture_block_entity_nbt_response");
+    private static final ResourceLocation PERMISSION_LIST_RESPONSE = new ResourceLocation(Ponderer.MODID, "permission_list_response");
+    private static final ResourceLocation BLUEPRINT_CONFIG_RESPONSE = new ResourceLocation(Ponderer.MODID, "blueprint_config_response");
+
+    @Override
+    public void registerPackets() {
+        // Serverbound handlers
+        ServerPlayNetworking.registerGlobalReceiver(UPLOAD_SCENE, (server, player, handler, buf, responseSender) -> {
+            UploadScenePayload msg = UploadScenePayload.decode(buf);
+            server.execute(() -> UploadScenePayload.handle(msg, player));
+        });
+
+        ServerPlayNetworking.registerGlobalReceiver(SYNC_REQUEST, (server, player, handler, buf, responseSender) -> {
+            SyncRequestPayload msg = SyncRequestPayload.decode(buf);
+            server.execute(() -> SyncRequestPayload.handle(msg, player));
+        });
+
+        ServerPlayNetworking.registerGlobalReceiver(DOWNLOAD_STRUCTURE, (server, player, handler, buf, responseSender) -> {
+            DownloadStructurePayload msg = DownloadStructurePayload.decode(buf);
+            server.execute(() -> DownloadStructurePayload.handle(msg, player));
+        });
+
+        ServerPlayNetworking.registerGlobalReceiver(CAPTURE_BLOCK_ENTITY_NBT_REQUEST, (server, player, handler, buf, responseSender) -> {
+            CaptureBlockEntityNbtRequestPayload msg = CaptureBlockEntityNbtRequestPayload.decode(buf);
+            server.execute(() -> CaptureBlockEntityNbtRequestPayload.handle(msg, player));
+        });
+
+        ServerPlayNetworking.registerGlobalReceiver(PERMISSION_LIST_REQUEST, (server, player, handler, buf, responseSender) -> {
+            PermissionListRequestPayload msg = PermissionListRequestPayload.decode(buf);
+            server.execute(() -> PermissionListRequestPayload.handle(msg, player));
+        });
+
+        ServerPlayNetworking.registerGlobalReceiver(PERMISSION_UPDATE, (server, player, handler, buf, responseSender) -> {
+            PermissionUpdateRequestPayload msg = PermissionUpdateRequestPayload.decode(buf);
+            server.execute(() -> PermissionUpdateRequestPayload.handle(msg, player));
+        });
+
+        ServerPlayNetworking.registerGlobalReceiver(BLUEPRINT_CONFIG_REQUEST, (server, player, handler, buf, responseSender) -> {
+            BlueprintConfigRequestPayload msg = BlueprintConfigRequestPayload.decode(buf);
+            server.execute(() -> BlueprintConfigRequestPayload.handle(msg, player));
+        });
+
+        ServerPlayNetworking.registerGlobalReceiver(BLUEPRINT_CONFIG_UPDATE, (server, player, handler, buf, responseSender) -> {
+            BlueprintConfigUpdatePayload msg = BlueprintConfigUpdatePayload.decode(buf);
+            server.execute(() -> BlueprintConfigUpdatePayload.handle(msg, player));
+        });
+
+        // Clientbound handlers
+        if (FabricLoader.getInstance().getEnvironmentType() == EnvType.CLIENT) {
+            registerClientboundHandlers();
+        }
+    }
+
+    @Environment(EnvType.CLIENT)
+    private void registerClientboundHandlers() {
+        ClientPlayNetworking.registerGlobalReceiver(SYNC_RESPONSE, (client, handler, buf, responseSender) -> {
+            SyncResponsePayload msg = SyncResponsePayload.decode(buf);
+            client.execute(() -> SyncResponsePayload.handle(msg));
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(DOWNLOAD_STRUCTURE_RESULT, (client, handler, buf, responseSender) -> {
+            DownloadStructureResultPayload msg = DownloadStructureResultPayload.decode(buf);
+            client.execute(() -> DownloadStructureResultPayload.handle(msg));
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(UPLOAD_RESPONSE, (client, handler, buf, responseSender) -> {
+            UploadResponsePayload msg = UploadResponsePayload.decode(buf);
+            client.execute(() -> UploadResponsePayload.handle(msg));
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(CAPTURE_BLOCK_ENTITY_NBT_RESPONSE, (client, handler, buf, responseSender) -> {
+            CaptureBlockEntityNbtResponsePayload msg = CaptureBlockEntityNbtResponsePayload.decode(buf);
+            client.execute(() -> CaptureBlockEntityNbtResponsePayload.handle(msg));
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(PERMISSION_LIST_RESPONSE, (client, handler, buf, responseSender) -> {
+            PermissionListResponsePayload msg = PermissionListResponsePayload.decode(buf);
+            client.execute(() -> PermissionListResponsePayload.handle(msg));
+        });
+
+        ClientPlayNetworking.registerGlobalReceiver(BLUEPRINT_CONFIG_RESPONSE, (client, handler, buf, responseSender) -> {
+            BlueprintConfigResponsePayload msg = BlueprintConfigResponsePayload.decode(buf);
+            client.execute(() -> BlueprintConfigResponsePayload.handle(msg));
+        });
+    }
+
+    @Override
+    @Environment(EnvType.CLIENT)
+    public void sendToServer(Object packet) {
+        net.minecraft.network.FriendlyByteBuf buf = new net.minecraft.network.FriendlyByteBuf(
+                io.netty.buffer.Unpooled.buffer());
+        ResourceLocation channelId = getChannelId(packet);
+        if (!ClientPlayNetworking.canSend(channelId)) {
+            return;
+        }
+        encodePacket(packet, buf);
+        ClientPlayNetworking.send(channelId, buf);
+    }
+
+    @Override
+    public void sendToPlayer(ServerPlayer player, Object packet) {
+        net.minecraft.network.FriendlyByteBuf buf = new net.minecraft.network.FriendlyByteBuf(
+                io.netty.buffer.Unpooled.buffer());
+        ResourceLocation channelId = getChannelId(packet);
+        encodePacket(packet, buf);
+        ServerPlayNetworking.send(player, channelId, buf);
+    }
+
+    private ResourceLocation getChannelId(Object packet) {
+        if (packet instanceof UploadScenePayload) return UPLOAD_SCENE;
+        if (packet instanceof SyncRequestPayload) return SYNC_REQUEST;
+        if (packet instanceof DownloadStructurePayload) return DOWNLOAD_STRUCTURE;
+        if (packet instanceof CaptureBlockEntityNbtRequestPayload) return CAPTURE_BLOCK_ENTITY_NBT_REQUEST;
+        if (packet instanceof PermissionListRequestPayload) return PERMISSION_LIST_REQUEST;
+        if (packet instanceof PermissionUpdateRequestPayload) return PERMISSION_UPDATE;
+        if (packet instanceof BlueprintConfigRequestPayload) return BLUEPRINT_CONFIG_REQUEST;
+        if (packet instanceof BlueprintConfigUpdatePayload) return BLUEPRINT_CONFIG_UPDATE;
+        if (packet instanceof SyncResponsePayload) return SYNC_RESPONSE;
+        if (packet instanceof DownloadStructureResultPayload) return DOWNLOAD_STRUCTURE_RESULT;
+        if (packet instanceof UploadResponsePayload) return UPLOAD_RESPONSE;
+        if (packet instanceof CaptureBlockEntityNbtResponsePayload) return CAPTURE_BLOCK_ENTITY_NBT_RESPONSE;
+        if (packet instanceof PermissionListResponsePayload) return PERMISSION_LIST_RESPONSE;
+        if (packet instanceof BlueprintConfigResponsePayload) return BLUEPRINT_CONFIG_RESPONSE;
+        throw new IllegalArgumentException("Unknown packet type: " + packet.getClass().getName());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void encodePacket(Object packet, net.minecraft.network.FriendlyByteBuf buf) {
+        if (packet instanceof UploadScenePayload p) p.encode(buf);
+        else if (packet instanceof SyncRequestPayload p) p.encode(buf);
+        else if (packet instanceof DownloadStructurePayload p) p.encode(buf);
+        else if (packet instanceof CaptureBlockEntityNbtRequestPayload p) p.encode(buf);
+        else if (packet instanceof PermissionListRequestPayload p) p.encode(buf);
+        else if (packet instanceof PermissionUpdateRequestPayload p) p.encode(buf);
+        else if (packet instanceof BlueprintConfigRequestPayload p) p.encode(buf);
+        else if (packet instanceof BlueprintConfigUpdatePayload p) p.encode(buf);
+        else if (packet instanceof SyncResponsePayload p) p.encode(buf);
+        else if (packet instanceof DownloadStructureResultPayload p) p.encode(buf);
+        else if (packet instanceof UploadResponsePayload p) p.encode(buf);
+        else if (packet instanceof CaptureBlockEntityNbtResponsePayload p) p.encode(buf);
+        else if (packet instanceof PermissionListResponsePayload p) p.encode(buf);
+        else if (packet instanceof BlueprintConfigResponsePayload p) p.encode(buf);
+        else throw new IllegalArgumentException("Unknown packet type: " + packet.getClass().getName());
+    }
+}

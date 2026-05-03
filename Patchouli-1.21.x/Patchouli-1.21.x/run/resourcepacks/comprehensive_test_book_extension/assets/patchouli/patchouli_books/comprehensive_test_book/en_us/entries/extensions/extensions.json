@@ -1,0 +1,11 @@
+{
+  "name": "Extensions",
+  "category": "patchouli:extensions",
+  "icon": "minecraft:command_block",
+  "pages": [
+    {
+      "type": "patchouli:text",
+      "text": "This entry was added from an extension book into a new extension category."
+    }
+  ]
+}

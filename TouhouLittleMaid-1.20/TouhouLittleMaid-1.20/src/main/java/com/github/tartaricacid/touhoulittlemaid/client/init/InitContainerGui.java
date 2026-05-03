@@ -1,0 +1,50 @@
+package com.github.tartaricacid.touhoulittlemaid.client.init;
+
+import com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.backpack.*;
+import com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.config.MaidConfigContainerGui;
+import com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.task.AttackTaskConfigGui;
+import com.github.tartaricacid.touhoulittlemaid.client.gui.entity.maid.task.DefaultMaidTaskConfigGui;
+import com.github.tartaricacid.touhoulittlemaid.client.gui.item.PicnicBasketContainerScreen;
+import com.github.tartaricacid.touhoulittlemaid.client.gui.item.WirelessIOContainerGui;
+import com.github.tartaricacid.touhoulittlemaid.compat.curios.CuriosCompat;
+import com.github.tartaricacid.touhoulittlemaid.init.registry.CompatRegistry;
+import com.github.tartaricacid.touhoulittlemaid.inventory.container.backpack.*;
+import com.github.tartaricacid.touhoulittlemaid.inventory.container.config.MaidConfigContainer;
+import com.github.tartaricacid.touhoulittlemaid.inventory.container.other.PicnicBasketContainer;
+import com.github.tartaricacid.touhoulittlemaid.inventory.container.other.WirelessIOContainer;
+import com.github.tartaricacid.touhoulittlemaid.inventory.container.task.AttackTaskConfigContainer;
+import com.github.tartaricacid.touhoulittlemaid.inventory.container.task.DefaultMaidTaskConfigContainer;
+import net.minecraft.client.gui.screens.MenuScreens;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.ModList;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.event.lifecycle.FMLClientSetupEvent;
+
+@Mod.EventBusSubscriber(value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.MOD)
+public final class InitContainerGui {
+    @SubscribeEvent
+    public static void clientSetup(FMLClientSetupEvent evt) {
+        evt.enqueueWork(() -> MenuScreens.register(EmptyBackpackContainer.TYPE, EmptyBackpackContainerScreen::new));
+        evt.enqueueWork(() -> MenuScreens.register(SmallBackpackContainer.TYPE, SmallBackpackContainerScreen::new));
+        evt.enqueueWork(() -> MenuScreens.register(MiddleBackpackContainer.TYPE, MiddleBackpackContainerScreen::new));
+        evt.enqueueWork(() -> MenuScreens.register(BigBackpackContainer.TYPE, BigBackpackContainerScreen::new));
+        evt.enqueueWork(() -> MenuScreens.register(CraftingTableBackpackContainer.TYPE, CraftingTableBackpackContainerScreen::new));
+        evt.enqueueWork(() -> MenuScreens.register(EnderChestBackpackContainer.TYPE, EnderChestBackpackContainerScreen::new));
+        evt.enqueueWork(() -> MenuScreens.register(FurnaceBackpackContainer.TYPE, FurnaceBackpackContainerScreen::new));
+        evt.enqueueWork(() -> MenuScreens.register(TankBackpackContainer.TYPE, TankBackpackContainerScreen::new));
+
+        evt.enqueueWork(() -> MenuScreens.register(BaubleContainer.TYPE, BaubleContainerScreen::new));
+        evt.enqueueWork(() -> MenuScreens.register(MaidConfigContainer.TYPE, MaidConfigContainerGui::new));
+        evt.enqueueWork(() -> MenuScreens.register(WirelessIOContainer.TYPE, WirelessIOContainerGui::new));
+        evt.enqueueWork(() -> MenuScreens.register(PicnicBasketContainer.TYPE, PicnicBasketContainerScreen::new));
+
+        evt.enqueueWork(() -> MenuScreens.register(DefaultMaidTaskConfigContainer.TYPE, DefaultMaidTaskConfigGui::new));
+        evt.enqueueWork(() -> MenuScreens.register(AttackTaskConfigContainer.TYPE, AttackTaskConfigGui::new));
+
+        // Curios 兼容
+        if (ModList.get().isLoaded(CompatRegistry.CURIOS)) {
+            evt.enqueueWork(CuriosCompat::registerScreen);
+        }
+    }
+}
