@@ -5532,31 +5532,32 @@ class SurvivalController {
 
     this.emergencyShelterExitBusy = true;
     try {
+      const night = this.isNight();
       if (this.isDoorwayInstalled(doorwayPlan)) {
         await this.openDoorwayDoors(doorwayPlan);
-        if (!this.isNight()) return this.moveThroughEmergencyShelterDoorway(base);
+        if (!night) return this.moveThroughEmergencyShelterDoorway(base);
         return true;
       }
 
-      if (this.isDoorwayPassable(doorwayPlan) && !this.isNight()) return this.moveThroughEmergencyShelterDoorway(base);
-      if (await this.installEmergencyShelterDoor(base)) {
-        if (!this.isNight()) await this.moveThroughEmergencyShelterDoorway(base);
-        return true;
-      }
-      if (this.isNight()) return false;
+      if (this.isDoorwayPassable(doorwayPlan) && !night) return this.moveThroughEmergencyShelterDoorway(base);
 
-      const threat = this.nearestEntity((entity) => HOSTILE_MOBS.has(entity.name), this.config.survival.immediateThreatRadius ?? 8);
-      if (threat) return false;
+      if (!night) {
+        const threat = this.nearestEntity((entity) => HOSTILE_MOBS.has(entity.name), this.config.survival.immediateThreatRadius ?? 8);
+        if (threat) return false;
 
-      let opened = false;
-      for (const position of doorwayPlan) {
-        const block = this.bot.blockAt(position);
-        if (!block || block.name === "air" || this.isDoorBlock(block)) continue;
-        if (await this.digBlockAt(position)) opened = true;
+        let opened = false;
+        for (const position of doorwayPlan) {
+          if (this.shouldAbortCurrentAction()) return false;
+          const block = this.bot.blockAt(position);
+          if (!block || block.name === "air" || this.isDoorBlock(block)) continue;
+          if (await this.digBlockAt(position)) opened = true;
+        }
+        if (opened) this.logger.warn(`action=create_emergency_shelter_doorway; pos=${this.formatPosition(base)}; mode=daylight_repair`);
+        if (opened) await this.moveThroughEmergencyShelterDoorway(base);
+        return opened;
       }
-      if (opened) this.logger.warn(`action=create_emergency_shelter_doorway; pos=${this.formatPosition(base)}; mode=daylight_repair`);
-      if (opened) await this.moveThroughEmergencyShelterDoorway(base);
-      return opened;
+
+      return this.installEmergencyShelterDoor(base);
     } finally {
       this.emergencyShelterExitBusy = false;
     }

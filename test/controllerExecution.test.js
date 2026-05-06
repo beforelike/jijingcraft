@@ -1318,8 +1318,12 @@ test("ensureEmergencyShelterExit creates a fixed doorway in old sealed emergency
   const base = new Vec3(0, 64, 0);
   const shellKeys = new Set(controllerShellKeys(base));
   const dug = [];
+  let installedDoor = false;
   const controller = createController({
-    installEmergencyShelterDoor: async () => false,
+    installEmergencyShelterDoor: async () => {
+      installedDoor = true;
+      return false;
+    },
     isNight: () => false,
     nearestEntity: () => null,
     digBlockAt: async (position) => {
@@ -1344,6 +1348,7 @@ test("ensureEmergencyShelterExit creates a fixed doorway in old sealed emergency
 
   assert.equal(opened, true);
   assert.deepEqual(dug, ["0,64,-1", "0,65,-1"]);
+  assert.equal(installedDoor, false);
 });
 
 test("ensureEmergencyShelterExit opens only an installed emergency shelter door", async () => {
