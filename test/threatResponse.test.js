@@ -5,13 +5,17 @@ const { chooseHostileDamageResponse } = require("../src/survival/threatResponse"
 const base = {
   health: 16,
   criticalHealth: 8,
-  distance: 5,
+  distance: 3,
   immediateThreatRadius: 8,
   hasWeapon: true
 };
 
-test("retreats first when damaged by a close hostile even when armed", () => {
-  assert.equal(chooseHostileDamageResponse(base), "retreat");
+test("defends when damaged by a melee hostile while armed", () => {
+  assert.equal(chooseHostileDamageResponse(base), "defend");
+});
+
+test("retreats first when damaged outside melee range even when armed", () => {
+  assert.equal(chooseHostileDamageResponse({ ...base, distance: 6 }), "retreat");
 });
 
 test("retreats from damage when unarmed", () => {

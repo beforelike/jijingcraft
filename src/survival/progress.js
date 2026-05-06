@@ -33,6 +33,8 @@ function assessProgress(snapshot, config = {}) {
   const foodCount = countItems(inventory, FOOD_ITEMS);
   const materialCount = buildingMaterialCount(inventory);
   const plantedCrops = snapshot.progress?.plantedCrops ?? 0;
+  const logsCount = countItems(inventory, LOG_BLOCKS);
+  const cobblestoneCount = countItems(inventory, "cobblestone");
 
   const milestones = [
     {
@@ -117,7 +119,15 @@ function assessProgress(snapshot, config = {}) {
     stage: next?.id ?? "phase1_stable",
     summary: `${achieved.length}/${milestones.length}`,
     foodCount,
-    materialCount
+    materialCount,
+    logsCount,
+    cobblestoneCount,
+    hasShelter: Boolean(snapshot.progress?.hasStarterShelter),
+    playbookEnabled: survival.playbookEnabled === true,
+    day1LogTarget: survival.day1LogTarget ?? 20,
+    day1CobblestoneTarget: survival.day1CobblestoneTarget ?? 24,
+    stockpileLogTarget: survival.stockpileLogTarget ?? 96,
+    stockpileCobblestoneTarget: survival.stockpileCobblestoneTarget ?? 128
   };
 }
 

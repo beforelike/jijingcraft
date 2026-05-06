@@ -9,6 +9,9 @@
   },
   "scripts": {
     "start": "node src/index.js",
+    "export:knowledge": "node src/knowledge/exportKnowledge.js",
+    "scenario:berries": "node scripts/berryEscapeScenario.js",
+    "scenario:berry-escape": "node scripts/berryEscapeScenario.js",
     "test": "node --test test/**/*.test.js"
   },
   "dependencies": {

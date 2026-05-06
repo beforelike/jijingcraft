@@ -26,6 +26,10 @@ function createEmergencyShelterPlan(base) {
   return positions;
 }
 
+function createEmergencyShelterDoorwayPlan(base) {
+  return [base.offset(0, 0, -1), base.offset(0, 1, -1)];
+}
+
 function createStarterShelterPlan(base) {
   const positions = [];
   const radius = 2;
@@ -58,6 +62,7 @@ function createStarterShelterDoorwaySealPlan(base) {
 }
 
 module.exports = {
+  createEmergencyShelterDoorwayPlan,
   createEmergencyShelterPlan,
   createStarterShelterDoorwayPlan,
   createStarterShelterDoorwaySealPlan,

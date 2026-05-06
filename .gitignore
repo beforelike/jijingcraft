@@ -1,1 +1,35 @@
-node_modules
+# Dependencies
+node_modules/
+
+# Local secrets
+.env
+.env.local
+.env.*.local
+
+# Runtime state and generated data
+bot.log
+bot.err.log
+*.log
+data/llm/
+data/test/
+data/survival-memory.json
+data/knowledge/
+
+# Coverage and temp
+coverage/
+.nyc_output/
+tmp/
+temp/
+
+# Local reference archives and third-party source drops
+*.zip
+Patchouli-1.21.x/
+Ponderer-1.20.1/
+TouhouLittleMaid-1.20/
+Voyager-main/
+
+# Editor/OS noise
+.vscode/
+.DS_Store
+Thumbs.db
+.claude/settings.local.json

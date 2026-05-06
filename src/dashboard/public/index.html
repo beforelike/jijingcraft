@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SurvivalBot 状态面板</title>
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Minecraft SurvivalBot</p>
+        <h1>状态与行为树</h1>
+      </div>
+      <div class="topbar-controls">
+        <div class="time-controls" aria-label="时间控制">
+          <button id="setDayButton" type="button">切换白天</button>
+          <button id="setNightButton" type="button">切换夜晚</button>
+        </div>
+        <small id="timeControlStatus">时间控制待命</small>
+        <div class="connection" id="connectionBadge">连接中</div>
+      </div>
+    </header>
+
+    <section class="grid metrics" aria-label="BOT 状态">
+      <article class="panel metric-panel">
+        <span class="label">生命</span>
+        <strong id="healthValue">--</strong>
+        <div class="meter"><span id="healthMeter"></span></div>
+      </article>
+      <article class="panel metric-panel">
+        <span class="label">饱食</span>
+        <strong id="foodValue">--</strong>
+        <div class="meter food"><span id="foodMeter"></span></div>
+      </article>
+      <article class="panel metric-panel">
+        <span class="label">位置</span>
+        <strong id="positionValue">--</strong>
+        <small id="dimensionValue">unknown</small>
+      </article>
+      <article class="panel metric-panel">
+        <span class="label">世界时间</span>
+        <strong id="timeValue">--</strong>
+        <small id="nightValue">--</small>
+      </article>
+    </section>
+
+    <section class="panel bot-view-panel">
+      <div class="section-heading">
+        <span>BOT 视角</span>
+        <small id="botViewHeading">--</small>
+      </div>
+      <div class="bot-view-grid">
+        <div>
+          <span class="label">朝向</span>
+          <strong id="botViewAngles">--</strong>
+          <small id="botViewDirection">--</small>
+        </div>
+        <div>
+          <span class="label">当前注视实体</span>
+          <strong id="botViewTarget">--</strong>
+          <small id="botViewTargetDistance">--</small>
+        </div>
+        <div class="bot-view-blocks-wrap">
+          <span class="label">前方方块采样（1-8格）</span>
+          <div id="botViewBlocks" class="list-table"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel diagnostics-panel">
+      <div class="section-heading">
+        <span>控制诊断</span>
+        <small id="diagSummary">--</small>
+      </div>
+      <div class="diagnostics-grid">
+        <div>
+          <span class="label">整体健康</span>
+          <strong id="diagOverall" class="diag-badge">--</strong>
+          <small id="diagSignalCount">--</small>
+        </div>
+        <div>
+          <span class="label">快照延迟</span>
+          <strong id="diagSnapshotAge">--</strong>
+          <small id="diagTraceAge">--</small>
+        </div>
+      </div>
+      <div class="diagnostics-stack">
+        <div>
+          <span class="label">异常信号</span>
+          <div id="diagSignals" class="list-table"></div>
+        </div>
+        <div>
+          <span class="label">建议动作</span>
+          <div id="diagRecommendations" class="list-table"></div>
+        </div>
+        <div>
+          <span class="label">状态时间线</span>
+          <div id="diagTimeline" class="event-log"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <article class="panel current-task">
+        <div class="section-heading">
+          <span>当前任务</span>
+          <small id="updatedAt">等待数据</small>
+        </div>
+        <h2 id="decisionType">--</h2>
+        <p id="decisionReason">--</p>
+        <div class="task-meta">
+          <span id="skillId">skill: --</span>
+          <span id="nextTask">next: --</span>
+          <span id="priorityQueueState">priority: --</span>
+          <span id="controllerState">idle</span>
+        </div>
+      </article>
+
+      <article class="panel progress-panel">
+        <div class="section-heading">
+          <span>阶段进度</span>
+          <small id="progressSummary">0/0</small>
+        </div>
+        <div id="milestones" class="milestones"></div>
+      </article>
+    </section>
+
+    <section class="panel playbook-panel" id="playbookPanel">
+      <div class="section-heading">
+        <span>攻略目标</span>
+        <small id="playbookPhase">--</small>
+      </div>
+      <div id="playbookGoals" class="playbook-goals"></div>
+    </section>
+
+    <section class="panel agent-map-panel">
+      <div class="section-heading">
+        <span>Agent 思维导图</span>
+        <small id="agentMapStatus">--</small>
+      </div>
+      <div id="agentMindMap" class="agent-mind-map" aria-label="BOT Agent 框架思维导图"></div>
+    </section>
+
+    <section class="panel tree-panel">
+      <div class="section-heading">
+        <span>行为树</span>
+        <small id="activeBranch">--</small>
+      </div>
+      <div id="behaviorTree" class="behavior-tree"></div>
+    </section>
+
+    <section class="panel trace-panel">
+      <div class="section-heading">
+        <span>任务阶段追踪</span>
+        <small id="traceStatus">idle</small>
+      </div>
+      <div class="trace-grid">
+        <div class="trace-summary">
+          <div>
+            <span class="label">任务</span>
+            <strong id="traceTask">--</strong>
+          </div>
+          <div>
+            <span class="label">当前阶段</span>
+            <strong id="tracePhase">--</strong>
+          </div>
+          <div>
+            <span class="label">目标/原因</span>
+            <strong id="traceTarget">--</strong>
+          </div>
+          <div>
+            <span class="label">风险</span>
+            <strong id="traceRisk">--</strong>
+          </div>
+        </div>
+        <ol id="phaseTimeline" class="phase-timeline"></ol>
+        <div id="taskObservations" class="observation-log"></div>
+        <div class="trace-history-wrap">
+          <span class="label">任务结果历史（最近 32 条）</span>
+          <div id="taskHistory" class="event-log"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel llm-panel">
+      <div class="section-heading">
+        <span>LLM 规划</span>
+        <small id="llmStatus">disabled</small>
+      </div>
+      <div class="llm-grid">
+        <div>
+          <span class="label">模型</span>
+          <strong id="llmModel">--</strong>
+          <small id="llmHost">--</small>
+        </div>
+        <div>
+          <span class="label">最近调用</span>
+          <strong id="llmLastCall">--</strong>
+          <small id="llmLastError">--</small>
+        </div>
+        <div class="llm-plan">
+          <span class="label">候选目标</span>
+          <strong id="llmGoal">--</strong>
+          <p id="llmReason">--</p>
+        </div>
+        <div class="llm-plan">
+          <span class="label">候选任务</span>
+          <ol id="llmTasks" class="task-list compact"></ol>
+        </div>
+        <div class="llm-plan">
+          <span class="label">任务队列</span>
+          <strong id="llmQueueState">--</strong>
+          <ol id="llmQueueTasks" class="task-list compact"></ol>
+        </div>
+      </div>
+    </section>
+
+    <section class="layout bottom-layout">
+      <article class="panel">
+        <div class="section-heading">
+          <span>技能计划</span>
+          <small id="skillTitle">--</small>
+        </div>
+        <ol id="skillTasks" class="task-list"></ol>
+      </article>
+
+      <article class="panel">
+        <div class="section-heading">
+          <span>附近实体</span>
+          <small id="entityCount">0</small>
+        </div>
+        <div id="entities" class="list-table"></div>
+      </article>
+
+      <article class="panel">
+        <div class="section-heading">
+          <span>背包</span>
+          <small id="inventoryCount">0</small>
+        </div>
+        <div id="inventory" class="inventory-grid"></div>
+      </article>
+
+      <article class="panel">
+        <div class="section-heading">
+          <span>最近事件</span>
+          <small id="eventCount">0</small>
+        </div>
+        <div id="events" class="event-log"></div>
+      </article>
+    </section>
+  </main>
+  <script src="/dashboard.js"></script>
+</body>
+</html>

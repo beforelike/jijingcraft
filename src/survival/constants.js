@@ -32,7 +32,7 @@ const HOSTILE_MOBS = new Set([
   "zombified_piglin"
 ]);
 
-const FOOD_MOBS = new Set(["cow", "pig", "sheep", "chicken", "rabbit"]);
+const FOOD_MOBS = new Set(["cow", "pig", "sheep", "chicken", "rabbit", "salmon", "cod", "tropical_fish"]);
 
 const LOG_BLOCKS = [
   "oak_log",
