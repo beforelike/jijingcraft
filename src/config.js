@@ -84,6 +84,30 @@ function loadLlmConfig() {
   };
 }
 
+function loadPythonBrainConfig() {
+  const host = readString("BRAIN_HOST", "127.0.0.1");
+  const port = readInteger("BRAIN_PORT", 3001);
+  const url = readString("PYTHON_BRAIN_URL", `http://${host}:${port}`);
+  const command = readString("PYTHON_BRAIN_COMMAND", "python");
+  const args = readString("PYTHON_BRAIN_ARGS", "-m python_brain.main");
+  const enabled = readBoolean("PYTHON_BRAIN_ENABLED", false);
+  return {
+    enabled,
+    serviceEnabled: readBoolean("PYTHON_BRAIN_SERVICE_ENABLED", true),
+    url,
+    host,
+    port,
+    timeoutMs: readInteger("PYTHON_BRAIN_TIMEOUT_MS", 30000),
+    planningIntervalMs: readInteger("PYTHON_BRAIN_PLANNER_INTERVAL_MS", 30000),
+    managed: readBoolean("PYTHON_BRAIN_MANAGED", true),
+    autoStart: readBoolean("PYTHON_BRAIN_AUTO_START", false),
+    command,
+    args,
+    healthTimeoutMs: readInteger("PYTHON_BRAIN_HEALTH_TIMEOUT_MS", 2500),
+    maxLogLines: readInteger("PYTHON_BRAIN_MAX_LOG_LINES", 120)
+  };
+}
+
 function normalizeMinecraftVersion(rawVersion, warn = console.warn) {
   if (!rawVersion || rawVersion.trim().length === 0) return undefined;
 
@@ -123,6 +147,7 @@ function loadConfig() {
       startPausedMs: readInteger("TEST_START_PAUSED_MS", 0)
     },
     llm: loadLlmConfig(),
+    pythonBrain: loadPythonBrainConfig(),
     reconnect: {
       enabled: readBoolean("AUTO_RECONNECT", true),
       minDelayMs: readInteger("RECONNECT_MIN_DELAY_MS", 5000),
@@ -136,13 +161,14 @@ function loadConfig() {
     survival: {
       criticalHealth: readInteger("CRITICAL_HEALTH", 8),
       lowFood: readInteger("LOW_FOOD", 14),
+      lowOxygenThreshold: readInteger("LOW_OXYGEN_THRESHOLD", 8),
       nightFoodBuffer: readInteger("NIGHT_FOOD_BUFFER", 18),
       emergencyFood: readInteger("EMERGENCY_FOOD", 8),
       starterFoodTarget: readInteger("STARTER_FOOD_TARGET", 6),
       foodStockTarget: readInteger("FOOD_STOCK_TARGET", 18),
       foodSearchRadius: readInteger("FOOD_SEARCH_RADIUS", 48),
       buildShelter: readBoolean("BUILD_SHELTER", true),
-      shelterBlockTarget: readInteger("HOUSE_BLOCK_TARGET", readInteger("SHELTER_BLOCK_TARGET", 80)),
+      shelterBlockTarget: readInteger("HOUSE_BLOCK_TARGET", readInteger("SHELTER_BLOCK_TARGET", 160)),
       woolTarget: readInteger("WOOL_TARGET", 3),
       plantCrops: readBoolean("PLANT_CROPS", true),
       cropPlotTarget: readInteger("CROP_PLOT_TARGET", 6),
@@ -159,12 +185,16 @@ function loadConfig() {
       safeModeThreatRadius: readInteger("SAFE_MODE_THREAT_RADIUS", 28),
       immediateThreatRadius: readInteger("IMMEDIATE_THREAT_RADIUS", 8),
       shelterDefenseRadius: readInteger("SHELTER_DEFENSE_RADIUS", 4),
+      nightShelterReturnMaxDistance: readInteger("NIGHT_SHELTER_RETURN_MAX_DISTANCE", 96),
       evadeDistance: readInteger("EVADE_DISTANCE", 24),
       exploreRadius: readInteger("EXPLORE_RADIUS", 36),
       panicRetreatMs: readInteger("PANIC_RETREAT_MS", 3500),
       avoidNightExploration: readBoolean("AVOID_NIGHT_EXPLORATION", true),
       actionTimeoutMs: readInteger("ACTION_TIMEOUT_MS", 25000),
-      placeBlockTimeoutMs: readInteger("PLACE_BLOCK_TIMEOUT_MS", 3000)
+      placeBlockTimeoutMs: readInteger("PLACE_BLOCK_TIMEOUT_MS", 3000),
+      exactScanRadius: readInteger("EXACT_SCAN_RADIUS", 5),
+      regionalScanRadius: readInteger("REGIONAL_SCAN_RADIUS", 100),
+      regionalScanStep: readInteger("REGIONAL_SCAN_STEP", 10)
     }
   };
 }
@@ -174,5 +204,6 @@ module.exports = {
   isPlaceholderApiKey,
   loadConfig,
   loadLlmConfig,
+  loadPythonBrainConfig,
   normalizeMinecraftVersion
 };

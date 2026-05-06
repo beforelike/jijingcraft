@@ -748,6 +748,31 @@ test("returnToStarterShelterForNight navigates to the remembered base and fortif
   assert.equal(fortified, true);
 });
 
+test("returnToStarterShelterForNight skips remembered shelters that are too far at night", async () => {
+  let gotoCalled = false;
+  const base = new Vec3(220, 64, 0);
+  const controller = createController({
+    nearestEntity: () => null,
+    gotoNear: async () => {
+      gotoCalled = true;
+      return true;
+    }
+  });
+  controller.config.survival.nightShelterReturnMaxDistance = 96;
+  controller.progressState = {
+    hasStarterShelter: true,
+    starterShelterPosition: { x: base.x, y: base.y, z: base.z }
+  };
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+
+  const returned = await controller.returnToStarterShelterForNight();
+
+  assert.equal(returned, false);
+  assert.equal(gotoCalled, false);
+});
+
 test("invalid position recovery restores the last valid position instead of quitting", async () => {
   let quitCalled = false;
   let pausedForMs = 0;
@@ -834,6 +859,364 @@ test("door blocks are treated as passable shelter doorway space", () => {
   assert.equal(controller.isSafeStandPosition(base), true);
 });
 
+test("starter shelter status requires house utilities instead of only a sealed shell", () => {
+  const base = new Vec3(0, 64, 0);
+  const controller = createController();
+  const shellKeys = new Set(controller.createStarterShelterPlan(base).map((position) => `${position.x},${position.y},${position.z}`));
+  const doorKeys = new Set(["0,64,-3", "0,65,-3", "1,64,-3", "1,65,-3"]);
+  const utilityBlocks = new Map();
+  controller.progressState = {
+    hasStarterShelter: true,
+    starterShelterPosition: { x: base.x, y: base.y, z: base.z }
+  };
+  controller.bot = {
+    entity: { position: base.clone() },
+    blockAt: (position) => {
+      const key = `${position.x},${position.y},${position.z}`;
+      if (utilityBlocks.has(key)) return { name: utilityBlocks.get(key), position, boundingBox: "block" };
+      if (doorKeys.has(key)) return { name: "oak_door", position, boundingBox: "block" };
+      if (shellKeys.has(key)) return { name: "spruce_planks", position, boundingBox: "block" };
+      if (position.y === 63) return { name: "grass_block", position, boundingBox: "block" };
+      return { name: "air", position, boundingBox: "empty" };
+    }
+  };
+
+  assert.equal(controller.getStarterShelterStatus(base).usable, false);
+
+  const utilities = controller.starterShelterUtilityPlan(base);
+  utilityBlocks.set(`${utilities.craftingTable.x},${utilities.craftingTable.y},${utilities.craftingTable.z}`, "crafting_table");
+  utilityBlocks.set(`${utilities.furnace.x},${utilities.furnace.y},${utilities.furnace.z}`, "furnace");
+  utilityBlocks.set(`${utilities.chest.x},${utilities.chest.y},${utilities.chest.z}`, "chest");
+
+  assert.equal(controller.getStarterShelterStatus(base).usable, true);
+});
+
+test("starter shelter surface site rejects covered underground spaces", () => {
+  const controller = createController();
+  const coveredBase = new Vec3(0, 50, 0);
+  const surfaceBase = new Vec3(0, 64, 0);
+  controller.bot = {
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (blockPosition.y === 49 || blockPosition.y === 63) return { name: "grass_block", position: blockPosition, boundingBox: "block" };
+      if (blockPosition.y === 55) return { name: "stone", position: blockPosition, boundingBox: "block" };
+      return { name: "air", position: blockPosition, boundingBox: "empty" };
+    }
+  };
+
+  assert.equal(controller.isStarterShelterSurfaceBuildSite(coveredBase), false);
+  assert.equal(controller.isStarterShelterSurfaceBuildSite(surfaceBase), true);
+});
+
+test("platform descent edge is selected from the current platform, not water center height", () => {
+  const controller = createController();
+  const blockAt = (position) => {
+    const blockPosition = position.floored();
+    const onPlatform = blockPosition.y === 63 && Math.abs(blockPosition.x) <= 2 && Math.abs(blockPosition.z) <= 2;
+    if (onPlatform) return { name: "stone", position: blockPosition, boundingBox: "block", diggable: true };
+    if (blockPosition.x === 7 && blockPosition.y === 40 && blockPosition.z === 0) return { name: "water", position: blockPosition, boundingBox: "empty", diggable: false };
+    return { name: "air", position: blockPosition, boundingBox: "empty", diggable: false };
+  };
+  controller.bot = { blockAt };
+
+  const edge = controller.findPlatformDescentEdge(new Vec3(0, 64, 0), new Vec3(7, 40, 0));
+
+  assert.ok(edge);
+  assert.equal(edge.stand.x, 2);
+  assert.equal(edge.drop.x, 3);
+  assert.equal(edge.stepTarget.x, 7);
+  assert.equal(edge.targetHorizontalDistance, 4);
+});
+
+test("platform descent edge skips supported platform interior cells", () => {
+  const controller = createController();
+  const blockAt = (position) => {
+    const blockPosition = position.floored();
+    const platformGround = blockPosition.y === 63 && blockPosition.x >= -1 && blockPosition.x <= 1 && blockPosition.z === 0;
+    if (platformGround) return { name: "stone", position: blockPosition, boundingBox: "block", diggable: true };
+    if (blockPosition.x === 3 && blockPosition.y === 40 && blockPosition.z === 0) return { name: "water", position: blockPosition, boundingBox: "empty", diggable: false };
+    return { name: "air", position: blockPosition, boundingBox: "empty", diggable: false };
+  };
+  controller.bot = { blockAt };
+
+  const edge = controller.findPlatformDescentEdge(new Vec3(0, 64, 0), new Vec3(3, 40, 0));
+
+  assert.ok(edge);
+  assert.equal(edge.stand.x, 1);
+  assert.equal(edge.drop.x, 2);
+});
+
+test("platform descent snapshot does not request descent without a real edge", () => {
+  const controller = createController();
+  const blockAt = (position) => {
+    const blockPosition = position.floored();
+    const supportedPlatform = blockPosition.y === 63 && Math.abs(blockPosition.x) <= 10 && Math.abs(blockPosition.z) <= 10;
+    if (supportedPlatform) return { name: "stone", position: blockPosition, boundingBox: "block", diggable: true };
+    if (blockPosition.x === 3 && blockPosition.y === 40 && blockPosition.z === 0) return { name: "water", position: blockPosition, boundingBox: "empty", diggable: false };
+    return { name: "air", position: blockPosition, boundingBox: "empty", diggable: false };
+  };
+  controller.bot = { blockAt };
+
+  const descent = controller.buildPlatformDescentSnapshot(new Vec3(0, 64, 0), null, { waterCount: 0 });
+
+  assert.equal(descent.bestTarget, null);
+  assert.equal(descent.needsDescent, false);
+  assert.equal(descent.bestEdge, null);
+  assert.equal(descent.summary, null);
+});
+
+test("water descent targets do not scan through solid blocks", () => {
+  const controller = createController();
+  controller.bot = {
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (blockPosition.x === 0 && blockPosition.z === 0 && blockPosition.y === 63) return { name: "stone", position: blockPosition, boundingBox: "block" };
+      if (blockPosition.x === 0 && blockPosition.z === 0 && blockPosition.y === 40) return { name: "water", position: blockPosition, boundingBox: "empty" };
+      return { name: "air", position: blockPosition, boundingBox: "empty" };
+    }
+  };
+
+  assert.deepEqual(controller.findWaterDescentTargets(new Vec3(0, 64, 0), 0, 40), []);
+  assert.equal(controller.findWaterLandingBelow(new Vec3(0, 64, 0), 40), null);
+});
+
+test("water with oxygen buffer is not treated as a pit or low oxygen emergency", () => {
+  const controller = createController();
+  controller.bot = {
+    oxygenLevel: 10,
+    entity: { position: new Vec3(0, 60, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (blockPosition.x === 0 && blockPosition.z === 0 && (blockPosition.y === 60 || blockPosition.y === 61)) return { name: "water", position: blockPosition, boundingBox: "empty" };
+      if (blockPosition.y <= 59) return { name: "sand", position: blockPosition, boundingBox: "block", diggable: true };
+      return { name: "air", position: blockPosition, boundingBox: "empty" };
+    }
+  };
+
+  assert.equal(controller.shouldEscapeForLowOxygen(new Vec3(0, 60, 0), 8), false);
+  const analysis = controller.analyzeNavigationSituation(new Vec3(0, 60, 0));
+  assert.equal(analysis.trapped, false);
+  assert.equal(analysis.kind, "water_column");
+  assert.equal(analysis.recommendedAction, "swim_or_find_shore");
+
+  controller.bot.oxygenLevel = 8;
+  assert.equal(controller.shouldEscapeForLowOxygen(new Vec3(0, 60, 0), 8), true);
+});
+
+test("low oxygen under ice digs an overhead breathing hole", async () => {
+  const controller = createController();
+  let iceBroken = false;
+  let dugPosition = null;
+  const swimTargets = [];
+  controller.digBlockAt = async (position) => {
+    dugPosition = position;
+    iceBroken = true;
+    return true;
+  };
+  controller.swimTowardAir = async (options) => {
+    swimTargets.push(options.targetPosition);
+    controller.bot.entity.position = new Vec3(0, 64, 0);
+    return true;
+  };
+  controller.bot = {
+    oxygenLevel: 6,
+    entity: { position: new Vec3(0, 60, 0) },
+    pvp: { stop() {} },
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (!iceBroken && blockPosition.y === 63) return { name: "ice", position: blockPosition, boundingBox: "block", diggable: true };
+      if (blockPosition.y >= 60 && blockPosition.y <= 62) return { name: "water", position: blockPosition, boundingBox: "empty" };
+      return { name: "air", position: blockPosition, boundingBox: "empty", diggable: false };
+    }
+  };
+
+  const escaped = await controller.escapeLowOxygen({ reason: "test_under_ice" });
+
+  assert.equal(escaped, true);
+  assert.deepEqual(dugPosition, new Vec3(0, 63, 0));
+  assert.deepEqual(swimTargets.at(-1), new Vec3(0, 64, 0));
+});
+
+test("explore exits water before applying normal night hold", async () => {
+  const controller = createController();
+  let gotoLabel = null;
+  let heldAtNight = false;
+  controller.isNight = () => true;
+  controller.holdPositionSafely = async () => {
+    heldAtNight = true;
+    return false;
+  };
+  controller.gotoNear = async (x, y, z, range, options) => {
+    gotoLabel = options.label;
+    controller.bot.entity.position = new Vec3(x, y, z);
+    return true;
+  };
+  controller.bot = {
+    oxygenLevel: 12,
+    health: 20,
+    food: 20,
+    entity: { position: new Vec3(0, 60, 0) },
+    lookAt: async () => {},
+    setControlState: () => {},
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (blockPosition.x === 0 && blockPosition.z === 0 && (blockPosition.y === 60 || blockPosition.y === 61)) return { name: "water", position: blockPosition, boundingBox: "empty" };
+      if (blockPosition.x === 1 && blockPosition.z === 0 && blockPosition.y === 60) return { name: "dirt", position: blockPosition, boundingBox: "block", diggable: true };
+      if (blockPosition.y <= 59) return { name: "sand", position: blockPosition, boundingBox: "block", diggable: true };
+      return { name: "air", position: blockPosition, boundingBox: "empty" };
+    }
+  };
+
+  const moved = await controller.explore({ type: "explore" });
+
+  assert.equal(moved, true);
+  assert.equal(gotoLabel, "explore_water_exit");
+  assert.equal(heldAtNight, false);
+});
+
+test("evade hostiles exits water before land retreat logic", async () => {
+  const controller = createController();
+  let waterExitLabel = null;
+  let evaded = false;
+  controller.leaveWaterForTask = async (taskType, options) => {
+    waterExitLabel = { taskType, options };
+    return true;
+  };
+  controller.evadeHostiles = async () => {
+    evaded = true;
+    return true;
+  };
+  controller.bot = {
+    oxygenLevel: 12,
+    entity: { position: new Vec3(0, 60, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (blockPosition.y === 60 || blockPosition.y === 61) return { name: "water", position: blockPosition, boundingBox: "empty" };
+      return { name: "air", position: blockPosition, boundingBox: "empty" };
+    }
+  };
+
+  const result = await controller.executePrimitive({ type: "evade_hostiles" });
+
+  assert.equal(result, true);
+  assert.equal(waterExitLabel.taskType, "evade_hostiles");
+  assert.equal(evaded, false);
+});
+
+test("normal tasks descend from platform before executing", async () => {
+  const controller = createController();
+  let descended = false;
+  let collectedWood = false;
+  controller.bot = {
+    entity: { position: new Vec3(0, 80, 0) },
+    blockAt: () => ({ name: "air", boundingBox: "empty" })
+  };
+  controller.buildPlatformDescentSnapshot = () => ({
+    needsDescent: true,
+    summary: "elevated platform: water landing 19 blocks below",
+    bestTarget: {
+      entryPosition: { x: 0, y: 62, z: 0 },
+      waterPosition: { x: 0, y: 61, z: 0 }
+    }
+  });
+  controller.descendFromPlatform = async (decision) => {
+    descended = decision.targetPosition;
+    return true;
+  };
+  controller.collectWood = async () => {
+    collectedWood = true;
+    return true;
+  };
+
+  const result = await controller.executePrimitive({ type: "collect_wood" });
+
+  assert.equal(result, true);
+  assert.deepEqual(descended, { x: 0, y: 62, z: 0 });
+  assert.equal(collectedWood, false);
+});
+
+test("water exit failure prevents dry task body from running underwater", async () => {
+  const controller = createController();
+  let collectedWood = false;
+  controller.leaveWaterForTask = async () => false;
+  controller.collectWood = async () => {
+    collectedWood = true;
+    return true;
+  };
+  controller.bot = {
+    oxygenLevel: 12,
+    entity: { position: new Vec3(0, 60, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (blockPosition.y === 60 || blockPosition.y === 61) return { name: "water", position: blockPosition, boundingBox: "empty" };
+      return { name: "air", position: blockPosition, boundingBox: "empty" };
+    }
+  };
+
+  const result = await controller.executePrimitive({ type: "collect_wood" });
+
+  assert.equal(result, false);
+  assert.equal(collectedWood, false);
+});
+
+test("log mining clears non-axe held items before chopping by hand", async () => {
+  const controller = createController();
+  let unequipped = false;
+  controller.bot = {
+    heldItem: { name: "oak_planks" },
+    inventory: { items: () => [] },
+    unequip: async (slot) => {
+      if (slot === "hand") unequipped = true;
+    }
+  };
+
+  await controller.equipToolForBlock({ name: "oak_log" });
+
+  assert.equal(unequipped, true);
+});
+
+test("platform descent step walks horizontally until the bot leaves the stand block", async () => {
+  const controller = createController();
+  const edge = { drop: new Vec3(1, 64, 0) };
+  const controls = [];
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    lookAt: async () => {},
+    setControlState: (name, value) => {
+      controls.push([name, value]);
+      if (name === "forward" && value) controller.bot.entity.position = new Vec3(1.2, 63.4, 0);
+    }
+  };
+  controller.resetMotion = () => {};
+  controller.wait = async () => {};
+  controller.isSafeStandPosition = (position) => position.x === 0 && position.y === 64 && position.z === 0;
+
+  const steppedOff = await controller.stepOffPlatformTowardDescent(edge, new Vec3(4, 40, 0), 300);
+
+  assert.equal(steppedOff, true);
+  assert.ok(controls.some(([name, value]) => name === "forward" && value === true));
+  assert.ok(controls.some(([name, value]) => name === "forward" && value === false));
+});
+
+test("platform descent step does not succeed while still short of the drop cell", async () => {
+  const controller = createController();
+  const edge = { stand: new Vec3(0, 64, 0), drop: new Vec3(1, 64, 0) };
+  controller.bot = {
+    entity: { position: new Vec3(0.2, 64, 0) },
+    lookAt: async () => {},
+    setControlState: () => {}
+  };
+  controller.resetMotion = () => {};
+  controller.wait = async () => {};
+  let warning = "";
+  controller.logger.warn = (message) => { warning = message; };
+
+  const steppedOff = await controller.stepOffPlatformTowardDescent(edge, new Vec3(4, 40, 0), 1);
+
+  assert.equal(steppedOff, false);
+  assert.match(warning, /platform_step_off/);
+});
+
 test("digBlockAt refuses to break doors", async () => {
   let dug = false;
   const controller = createController();
@@ -852,10 +1235,17 @@ test("digBlockAt refuses to break doors", async () => {
 
 test("installStarterShelterDoor replaces a sealed doorway with an actual door", async () => {
   const base = new Vec3(10, 70, 10);
-  const lower = base.offset(0, 0, -2);
-  const upper = base.offset(0, 1, -2);
-  const sealed = new Set([`${lower.x},${lower.y},${lower.z}`, `${upper.x},${upper.y},${upper.z}`]);
-  let doorPlaced = false;
+  const lowerLeft = base.offset(0, 0, -3);
+  const upperLeft = base.offset(0, 1, -3);
+  const lowerRight = base.offset(1, 0, -3);
+  const upperRight = base.offset(1, 1, -3);
+  const sealed = new Set([
+    `${lowerLeft.x},${lowerLeft.y},${lowerLeft.z}`,
+    `${upperLeft.x},${upperLeft.y},${upperLeft.z}`,
+    `${lowerRight.x},${lowerRight.y},${lowerRight.z}`,
+    `${upperRight.x},${upperRight.y},${upperRight.z}`
+  ]);
+  const doorPlaced = new Set();
   const cleared = [];
   const controller = createController({
     craftDoor: async () => true,
@@ -869,16 +1259,18 @@ test("installStarterShelterDoor replaces a sealed doorway with an actual door", 
   controller.bot = {
     inventory: { items: () => [{ name: "oak_door", count: 1 }] },
     equip: async () => {},
-    placeBlock: async () => {
-      doorPlaced = true;
+    placeBlock: async (floor) => {
+      const lower = floor.position.offset(0, 1, 0);
+      doorPlaced.add(`${lower.x},${lower.y},${lower.z}`);
+      doorPlaced.add(`${lower.x},${lower.y + 1},${lower.z}`);
     },
     blockAt: (position) => {
       const key = `${position.x},${position.y},${position.z}`;
-      if (doorPlaced && (key === `${lower.x},${lower.y},${lower.z}` || key === `${upper.x},${upper.y},${upper.z}`)) {
+      if (doorPlaced.has(key)) {
         return { name: "oak_door", position, boundingBox: "block" };
       }
       if (sealed.has(key)) return { name: "spruce_planks", position, boundingBox: "block", diggable: true };
-      if (key === `${lower.x},${lower.y - 1},${lower.z}`) return { name: "spruce_planks", position, boundingBox: "block" };
+      if (key === `${lowerLeft.x},${lowerLeft.y - 1},${lowerLeft.z}` || key === `${lowerRight.x},${lowerRight.y - 1},${lowerRight.z}`) return { name: "spruce_planks", position, boundingBox: "block" };
       return { name: "air", position, boundingBox: "empty" };
     }
   };
@@ -889,8 +1281,13 @@ test("installStarterShelterDoor replaces a sealed doorway with an actual door", 
   const installed = await controller.installStarterShelterDoor(base);
 
   assert.equal(installed, true);
-  assert.equal(doorPlaced, true);
-  assert.deepEqual(cleared, [`${lower.x},${lower.y},${lower.z}`, `${upper.x},${upper.y},${upper.z}`]);
+  assert.equal(doorPlaced.size, 4);
+  assert.deepEqual(cleared, [
+    `${lowerLeft.x},${lowerLeft.y},${lowerLeft.z}`,
+    `${upperLeft.x},${upperLeft.y},${upperLeft.z}`,
+    `${lowerRight.x},${lowerRight.y},${lowerRight.z}`,
+    `${upperRight.x},${upperRight.y},${upperRight.z}`
+  ]);
   assert.equal(controller.isStarterShelterDoorInstalled(base), true);
 });
 

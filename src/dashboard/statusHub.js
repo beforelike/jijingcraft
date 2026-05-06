@@ -103,7 +103,7 @@ function normalizeBotPerspective(view = null) {
       position: serializePosition(view.targetEntity.position)
     } : null,
     frontBlocks: Array.isArray(view.frontBlocks)
-      ? view.frontBlocks.slice(0, 8).map((block) => ({
+      ? view.frontBlocks.slice(0, 16).map((block) => ({
         distance: Number(block.distance) || 0,
         name: block.name ?? null,
         solid: Boolean(block.solid),
@@ -111,6 +111,76 @@ function normalizeBotPerspective(view = null) {
         position: serializePosition(block.position)
       }))
       : []
+  };
+}
+
+function normalizeTerrainScan(terrain = null) {
+  if (!terrain || typeof terrain !== "object") return null;
+  const exactLocal = terrain.exactLocal ? {
+    radius: Number(terrain.exactLocal.radius) || 0,
+    width: Number(terrain.exactLocal.width) || 0,
+    center: serializePosition(terrain.exactLocal.center),
+    safeStandCount: Number(terrain.exactLocal.safeStandCount) || 0,
+    waterCount: Number(terrain.exactLocal.waterCount) || 0,
+    hazardCount: Number(terrain.exactLocal.hazardCount) || 0,
+    groundCounts: Array.isArray(terrain.exactLocal.groundCounts) ? terrain.exactLocal.groundCounts.slice(0, 12) : [],
+    cells: Array.isArray(terrain.exactLocal.cells) ? terrain.exactLocal.cells.slice(0, 121).map((cell) => ({
+      dx: Number(cell.dx) || 0,
+      dz: Number(cell.dz) || 0,
+      position: serializePosition(cell.position),
+      ground: cell.ground ?? null,
+      feet: cell.feet ?? null,
+      head: cell.head ?? null,
+      safeStand: Boolean(cell.safeStand),
+      water: Boolean(cell.water),
+      hazard: Boolean(cell.hazard)
+    })) : []
+  } : null;
+  const regional = terrain.regional ? {
+    radius: Number(terrain.regional.radius) || 0,
+    diameter: Number(terrain.regional.diameter) || 0,
+    step: Number(terrain.regional.step) || 0,
+    center: serializePosition(terrain.regional.center),
+    sampledAt: terrain.regional.sampledAt ?? null,
+    sampleCount: Number(terrain.regional.sampleCount) || 0,
+    waterCells: Number(terrain.regional.waterCells) || 0,
+    hazardCells: Number(terrain.regional.hazardCells) || 0,
+    safeCells: Number(terrain.regional.safeCells) || 0,
+    topBlocks: Array.isArray(terrain.regional.topBlocks) ? terrain.regional.topBlocks.slice(0, 16) : [],
+    cells: Array.isArray(terrain.regional.cells) ? terrain.regional.cells.slice(0, 160).map((cell) => ({
+      dx: Number(cell.dx) || 0,
+      dz: Number(cell.dz) || 0,
+      position: serializePosition(cell.position),
+      topBlock: cell.topBlock ?? null,
+      water: Boolean(cell.water),
+      hazard: Boolean(cell.hazard),
+      safeStand: Boolean(cell.safeStand)
+    })) : []
+  } : null;
+  const descent = terrain.descent ? {
+    needsDescent: Boolean(terrain.descent.needsDescent),
+    summary: terrain.descent.summary ?? null,
+    bestTarget: terrain.descent.bestTarget ? {
+      waterPosition: serializePosition(terrain.descent.bestTarget.waterPosition),
+      entryPosition: serializePosition(terrain.descent.bestTarget.entryPosition),
+      horizontalDistance: round(Number(terrain.descent.bestTarget.horizontalDistance) || 0),
+      drop: Number(terrain.descent.bestTarget.drop) || 0,
+      route: terrain.descent.bestTarget.route ?? null
+    } : null,
+    targetCount: Array.isArray(terrain.descent.targets) ? terrain.descent.targets.length : 0
+  } : null;
+  return {
+    sampleRadius: Number(terrain.sampleRadius) || 0,
+    primaryGround: terrain.primaryGround ?? null,
+    ground: Array.isArray(terrain.ground) ? terrain.ground.slice(0, 8) : [],
+    safeStandCount: Number(terrain.safeStandCount) || 0,
+    waterSamples: Number(terrain.waterSamples) || 0,
+    damagingSamples: Number(terrain.damagingSamples) || 0,
+    nearbyWater: Array.isArray(terrain.nearbyWater) ? terrain.nearbyWater.slice(0, 8).map((entry) => ({ name: entry.name, position: serializePosition(entry.position) })) : [],
+    nearbyLogs: Array.isArray(terrain.nearbyLogs) ? terrain.nearbyLogs.slice(0, 8).map((entry) => ({ name: entry.name, position: serializePosition(entry.position) })) : [],
+    exactLocal,
+    regional,
+    descent
   };
 }
 
@@ -217,11 +287,22 @@ function normalizeMemory(memory = {}) {
     })).reverse()
     : [];
 
-  return { knownBlocks, policyStats, avoidedPositions };
+  const exploration = memory.exploration && typeof memory.exploration === "object" ? {
+    lastScanAt: memory.exploration.lastScanAt ?? null,
+    lastPosition: serializePosition(memory.exploration.lastPosition),
+    lastLocalScan: memory.exploration.lastLocalScan ?? null,
+    lastRegionalScan: memory.exploration.lastRegionalScan ?? null,
+    lastDescent: memory.exploration.lastDescent ?? null,
+    visitedCount: Array.isArray(memory.exploration.visited) ? memory.exploration.visited.length : 0,
+    coarseCellCount: memory.exploration.coarseCells && typeof memory.exploration.coarseCells === "object" ? Object.keys(memory.exploration.coarseCells).length : 0
+  } : null;
+
+  return { knownBlocks, policyStats, avoidedPositions, exploration };
 }
 
 function normalizeController(controller = {}) {
   return {
+    lifecycleState: controller.lifecycleState ?? "active",
     busy: Boolean(controller.busy),
     emergencyBusy: Boolean(controller.emergencyBusy),
     pausedUntil: Number(controller.pausedUntil) || 0,
@@ -265,6 +346,10 @@ function normalizeBehaviorQueue(behaviorQueue = {}) {
     requestedBy: tree.requestedBy ?? null,
     taskRequestId: tree.taskRequestId ?? null,
     reason: tree.reason ?? null,
+    createdAt: tree.createdAt ?? null,
+    expiresAt: tree.expiresAt ?? null,
+    startedAt: tree.startedAt ?? null,
+    completedAt: tree.completedAt ?? null,
     parameters: normalizeTraceDetails(tree.parameters ?? tree.constructorArgs ?? {}),
     attempts: Number(tree.attempts) || 0,
     lastOutcome: tree.lastOutcome ?? null,
@@ -839,6 +924,8 @@ function createInitialState(config = {}) {
       navigationTrap: false,
       navigationAnalysis: null,
       isInLava: false,
+      isBodyInWater: false,
+      terrain: null,
       timeSinceOnGround: 0
     },
     decision: null,
@@ -963,6 +1050,8 @@ function createDashboardState(config = {}) {
         navigationTrap: Boolean(snapshot.navigationTrap),
         navigationAnalysis: normalizeNavigationAnalysis(snapshot.navigationAnalysis),
         isInLava: Boolean(snapshot.isInLava),
+        isBodyInWater: Boolean(snapshot.isBodyInWater),
+        terrain: normalizeTerrainScan(snapshot.terrain),
         timeSinceOnGround: Number(snapshot.timeSinceOnGround) || 0
       };
       state.decision = decision ? {

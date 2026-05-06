@@ -1,6 +1,6 @@
 const { buildExecutableBehaviorTree, taskLevel, taskPriority } = require("../behavior/executableBehaviorTree");
 
-const SAFETY_TASKS = new Set(["escape_hazard", "escape_pit", "eat_food", "recover_starvation"]);
+const SAFETY_TASKS = new Set(["escape_hazard", "escape_pit", "descend_from_platform", "eat_food", "recover_starvation"]);
 const COMBAT_TASKS = new Set(["evade_hostiles", "defend_shelter", "defend_self"]);
 const SURVIVAL_TASKS = new Set(["hunt_food", "collect_wood", "explore", "wait_out_night", "hold_position"]);
 const ENGINEERING_TASKS = new Set([

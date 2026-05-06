@@ -1,158 +1,204 @@
-/**
- * pythonBrainClient.js
- *
- * Drop-in adapter that lets SurvivalController delegate LLM planning to the
- * Python Smart Brain service instead of the JS AgentOrchestrator.
- *
- * When PYTHON_BRAIN_ENABLED=true in .env this module handles planning.
- * Falls back silently to the JS orchestrator on any error so the bot keeps
- * working even if the Python process is not running.
- */
-
-"use strict";
-
 const { buildExecutableBehaviorTree, taskPriority } = require("../behavior/executableBehaviorTree");
+const { HOSTILE_MOBS } = require("../survival/constants");
+const { buildPlannerContext } = require("./contextBuilder");
 
-const BRAIN_URL = process.env.PYTHON_BRAIN_URL || "http://127.0.0.1:3001";
-const ENABLED = process.env.PYTHON_BRAIN_ENABLED === "true";
-const TIMEOUT_MS = Number(process.env.PYTHON_BRAIN_TIMEOUT_MS) || 30_000;
-
-// Track consecutive failures to log warnings without spamming.
-let _consecutiveFailures = 0;
-const _MAX_LOG_CONSECUTIVE = 3;
-
-function _log(msg, ...args) {
-  const ts = new Date().toISOString();
-  console.log(`[python_brain] ${ts} ${msg}`, ...args);
+function normalizedBaseUrl(url) {
+  return String(url || "http://127.0.0.1:3001").replace(/\/+$/, "");
 }
 
-function _warn(msg, ...args) {
-  const ts = new Date().toISOString();
-  console.warn(`[python_brain] ${ts} WARN ${msg}`, ...args);
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value ?? null));
 }
 
-/**
- * Build the snapshot payload from the same context object that
- * SurvivalController / contextBuilder already produces.
- */
-function buildSnapshot(context = {}) {
-  const { snapshot = {}, ruleDecision = null, taskFeedback = {}, progress = {} } = context;
+function normalizePosition(position) {
+  if (!position) return null;
+  const x = Number(position.x);
+  const y = Number(position.y);
+  const z = Number(position.z);
+  return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z) ? { x, y, z } : null;
+}
 
-  const entities = (snapshot.entities ?? []).map((e) => ({
-    name: e.name ?? "",
-    distance: e.distance ?? null,
-    position: e.position ?? null,
-    hostile: e.hostile ?? false
-  }));
+function normalizeBlockedTasks(blockedTasks) {
+  if (Array.isArray(blockedTasks)) return blockedTasks;
+  if (blockedTasks && typeof blockedTasks === "object") return Object.values(blockedTasks);
+  return [];
+}
 
+function normalizeEntity(entity = {}) {
+  const name = entity.name ?? "";
   return {
-    position: snapshot.position ?? null,
-    health: snapshot.health ?? 20,
-    food: snapshot.food ?? 20,
-    isDay: snapshot.isDay ?? true,
-    timeOfDay: snapshot.timeOfDay ?? 0,
-    entities,
-    inventory: snapshot.inventory ?? {},
-    ruleDecision: ruleDecision
-      ? { type: ruleDecision.type, reason: ruleDecision.reason ?? null, priority: ruleDecision.priority ?? null }
-      : null,
-    taskFeedback: {
-      lastEvent: taskFeedback.lastEvent ?? null,
-      blockedTasks: taskFeedback.blockedTasks ?? [],
-      recentFailures: taskFeedback.recentFailures ?? []
-    },
-    memory: progress.memory ?? {},
-    terrain: snapshot.terrain ?? null
+    name,
+    distance: Number.isFinite(Number(entity.distance)) ? Number(entity.distance) : null,
+    position: normalizePosition(entity.position),
+    hostile: Boolean(entity.hostile) || HOSTILE_MOBS.has(name)
   };
 }
 
-/**
- * Convert a single behaviorTree entry from the Python response into a JS
- * executable behavior tree.  Unrecognised task types are silently dropped
- * (the JS whitelist in buildExecutableBehaviorTree will throw).
- */
-function _treeFromEntry(entry) {
+function buildPythonBrainRequest(context = {}) {
+  const { snapshot = {}, ruleDecision = null, taskFeedback = {}, progress = {}, memory = {}, controller = {} } = context;
+  const plannerContext = buildPlannerContext({
+    snapshot,
+    progress,
+    memory,
+    decision: ruleDecision,
+    skillEnvelope: context.skillEnvelope,
+    dimension: context.dimension,
+    controller: {
+      ...controller,
+      taskFeedback: {
+        ...taskFeedback,
+        blockedTasks: normalizeBlockedTasks(taskFeedback.blockedTasks)
+      }
+    }
+  });
+
+  return {
+    source: "node_survival_controller",
+    snapshot: {
+      position: normalizePosition(snapshot.position),
+      health: Number(snapshot.health ?? 20),
+      food: Number(snapshot.food ?? 20),
+      oxygen: Number(snapshot.oxygen ?? 20),
+      isDay: snapshot.isDay ?? !snapshot.isNight,
+      isNight: Boolean(snapshot.isNight),
+      timeOfDay: Number(snapshot.timeOfDay ?? 0),
+      entities: (snapshot.entities ?? []).map(normalizeEntity),
+      inventory: snapshot.inventory ?? {},
+      terrain: cloneJson(snapshot.terrain),
+      environmentHazard: cloneJson(snapshot.environmentHazard),
+      navigationTrap: Boolean(snapshot.navigationTrap),
+      isInLava: Boolean(snapshot.isInLava),
+      isBodyInWater: Boolean(snapshot.isBodyInWater)
+    },
+    ruleDecision: ruleDecision ? {
+      type: ruleDecision.type,
+      reason: ruleDecision.reason ?? null,
+      priority: ruleDecision.priority ?? null,
+      target: ruleDecision.target ?? null
+    } : null,
+    taskFeedback: {
+      lastEvent: taskFeedback.lastEvent ?? null,
+      blockedTasks: normalizeBlockedTasks(taskFeedback.blockedTasks),
+      recentFailures: taskFeedback.recentFailures ?? []
+    },
+    progress: progress ?? {},
+    memory: memory ?? {},
+    controller: controller ?? {},
+    plannerContext
+  };
+}
+
+function planEntryToTree(entry = {}, sourcePlanId = null) {
+  if (!entry || typeof entry.taskType !== "string") return null;
   try {
-    const tree = buildExecutableBehaviorTree(entry.taskType, {
+    return buildExecutableBehaviorTree(entry.taskType, {
+      treeClass: entry.treeClass,
+      taskFunction: entry.taskFunction,
+      constructorArgs: entry.constructorArgs ?? entry.parameters ?? {},
       priority: taskPriority(entry.taskType),
       source: "python_brain",
       sourceAgent: entry.sourceAgent ?? "general_agent",
-      reason: entry.reason ?? null,
+      requestedBy: entry.requestedBy ?? "general_agent",
+      taskRequestId: entry.taskRequestId,
+      sourcePlanId,
+      reason: entry.reason ?? "python_brain_plan",
+      preconditions: entry.preconditions,
+      postconditions: entry.postconditions,
       metadata: {
-        constructorArgs: entry.constructorArgs ?? {}
+        pythonBrain: true,
+        constructorArgs: entry.constructorArgs ?? entry.parameters ?? {}
       }
     });
-    return tree;
   } catch {
     return null;
   }
 }
 
-/**
- * Ask the Python Brain for a plan.  Returns an array of executable JS
- * behavior trees (already validated against the whitelist), or null on failure.
- *
- * @param {object} context - same context object passed to AgentOrchestrator.tick()
- * @returns {Promise<{trees: object[], planMeta: object} | null>}
- */
-async function requestPlan(context = {}) {
-  if (!ENABLED) return null;
+class PythonBrainClient {
+  constructor(config = {}, options = {}) {
+    this.config = config ?? {};
+    this.fetchImpl = options.fetchImpl ?? global.fetch;
+    this.enabled = Boolean(this.config.enabled);
+    this.baseUrl = normalizedBaseUrl(this.config.url);
+    this.timeoutMs = Math.max(1000, Number(this.config.timeoutMs) || 30000);
+    this.lastStatus = {
+      enabled: this.enabled,
+      status: this.enabled ? "idle" : "disabled",
+      url: this.baseUrl,
+      lastCallAt: null,
+      lastError: null,
+      lastPlan: null
+    };
+  }
 
-  const snapshot = buildSnapshot(context);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  getStatus() {
+    return { ...this.lastStatus };
+  }
 
-  try {
-    const resp = await fetch(`${BRAIN_URL}/plan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(snapshot),
-      signal: controller.signal
-    });
+  publish(update = {}) {
+    this.lastStatus = {
+      ...this.lastStatus,
+      ...update,
+      enabled: this.enabled,
+      url: this.baseUrl,
+      updatedAt: new Date().toISOString()
+    };
+    return this.getStatus();
+  }
 
-    clearTimeout(timer);
-
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      _warn(`HTTP ${resp.status} from Python Brain: ${text.slice(0, 200)}`);
-      _consecutiveFailures++;
+  async requestPlan(context = {}) {
+    if (!this.enabled || typeof this.fetchImpl !== "function") return null;
+    const body = buildPythonBrainRequest(context);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    const startedAt = Date.now();
+    this.publish({ status: "planning", lastCallAt: new Date(startedAt).toISOString(), lastError: null });
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/plan`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        const error = `HTTP ${response.status}${text ? `: ${text.slice(0, 160)}` : ""}`;
+        this.publish({ status: "error", lastError: error });
+        return null;
+      }
+      const plan = await response.json();
+      const sourcePlanId = `${Date.now()}:python_brain`;
+      const trees = (plan.behaviorTrees ?? []).map((entry) => planEntryToTree(entry, sourcePlanId)).filter(Boolean);
+      this.publish({ status: trees.length ? "planned" : "empty", lastPlan: plan, lastError: null });
+      return { plan, trees, durationMs: Date.now() - startedAt, sourcePlanId };
+    } catch (error) {
+      clearTimeout(timer);
+      const message = error.name === "AbortError" ? `timeout_${this.timeoutMs}ms` : error.message;
+      this.publish({ status: "error", lastError: message });
       return null;
     }
+  }
 
-    const plan = await resp.json();
-    _consecutiveFailures = 0;
-
-    const trees = (plan.behaviorTrees ?? [])
-      .map(_treeFromEntry)
-      .filter(Boolean);
-
-    return {
-      trees,
-      planMeta: {
-        stageAssessment: plan.stageAssessment ?? "",
-        agentProposals: plan.agentProposals ?? [],
-        confidence: plan.confidence ?? 0,
-        durationMs: plan.durationMs ?? 0
-      }
-    };
-  } catch (err) {
-    clearTimeout(timer);
-    _consecutiveFailures++;
-    if (_consecutiveFailures <= _MAX_LOG_CONSECUTIVE) {
-      _warn(`Failed to reach Python Brain (${err.message}). Falling back to JS orchestrator.`);
+  async healthCheck(timeoutMs = 3000) {
+    if (typeof this.fetchImpl !== "function") return { ok: false, error: "fetch_unavailable" };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await this.fetchImpl(`${this.baseUrl}/health`, { signal: controller.signal, cache: "no-store" });
+      clearTimeout(timer);
+      const payload = await response.json().catch(() => ({}));
+      return { ok: response.ok, status: response.status, payload };
+    } catch (error) {
+      clearTimeout(timer);
+      return { ok: false, error: error.name === "AbortError" ? `timeout_${timeoutMs}ms` : error.message };
     }
-    return null;
   }
 }
 
-/** Quick health check – used on startup to detect if Python Brain is up. */
-async function healthCheck() {
-  try {
-    const resp = await fetch(`${BRAIN_URL}/health`, { signal: AbortSignal.timeout(3000) });
-    return resp.ok;
-  } catch {
-    return false;
-  }
-}
-
-module.exports = { requestPlan, buildSnapshot, healthCheck, ENABLED };
+module.exports = {
+  PythonBrainClient,
+  buildPythonBrainRequest,
+  planEntryToTree,
+  normalizedBaseUrl
+};

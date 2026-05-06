@@ -13,6 +13,7 @@ const {
   validateExecutableBehaviorTree
 } = require("../src/behavior/executableBehaviorTree");
 const { LlmTaskQueue } = require("../src/llm/taskQueue");
+const { PriorityTaskQueue } = require("../src/survival/priorityTaskQueue");
 const { SurvivalController } = require("../src/survival/SurvivalController");
 
 test("executable behavior tree binds task priority and action nodes", () => {
@@ -449,6 +450,25 @@ test("controller accepts LLM behavior tree plans into the behavior queue", () =>
   assert.equal(controller.taskQueue.getStatus().pendingTasks.length, 0);
 });
 
+test("controller accepts Python Brain behavior tree plans into the behavior queue", () => {
+  const controller = Object.create(SurvivalController.prototype);
+  controller.behaviorQueue = new BehaviorExecutionQueue();
+  controller.config = { llm: { model: "test", baseHost: "example.test" } };
+  controller.logger = { warn() {} };
+  controller.pythonBrainClient = { publish: (update) => ({ enabled: true, ...update }) };
+  let llmState = null;
+  controller.statusReporter = { setLlmState: (state) => { llmState = state; } };
+
+  const result = controller.handlePythonBrainPlanResult({
+    plan: { stageAssessment: "need logs", behaviorTrees: [{ taskType: "collect_wood" }] },
+    trees: [buildExecutableBehaviorTree("collect_wood", { source: "python_brain", sourceAgent: "survival_agent" })]
+  });
+
+  assert.deepEqual(result.acceptedTasks, ["collect_wood"]);
+  assert.equal(controller.behaviorQueue.getStatus().pendingTrees[0].taskType, "collect_wood");
+  assert.equal(llmState.status, "python_brain_queued");
+});
+
 test("LLM behavior tree priority is forced to the preset task priority", () => {
   const queue = new BehaviorExecutionQueue();
 
@@ -670,4 +690,130 @@ test("behavior queue accepts smart brain task requests as tree instances", () =>
   assert.equal(tree.requestedBy, "general_agent");
   assert.equal(tree.taskRequestId, "req-explore-10x10");
   assert.deepEqual(tree.constructorArgs, { radius: 10, mode: "safe_scan", area: "10x10", targetPosition: { x: 8, y: 64, z: 4 } });
+});
+
+test("behavior queue discards superseded pending planner trees without touching current work", () => {
+  const queue = new BehaviorExecutionQueue();
+  queue.enqueueTask("collect_wood", { source: "llm_planner", sourcePlanId: "plan-current" });
+  queue.startNext({ ruleDecision: "collect_wood" });
+  queue.enqueueTask("explore", { source: "llm_planner", sourcePlanId: "plan-old" });
+  queue.enqueueTask("hunt_food", { source: "agent_orchestrator", sourcePlanId: "local-food" });
+
+  const event = queue.discardPendingBySource("llm_planner", "planner_superseded", { planId: "plan-new" });
+  const status = queue.getStatus();
+
+  assert.equal(event.removed, 1);
+  assert.equal(status.currentTree.taskType, "collect_wood");
+  assert.deepEqual(status.pendingTrees.map((tree) => tree.taskType), ["hunt_food"]);
+  assert.equal(status.completedTrees[0].taskType, "explore");
+  assert.equal(status.completedTrees[0].status, "skipped");
+  assert.equal(status.completedTrees[0].lastReason, "planner_superseded");
+});
+
+test("controller rejects stale planner behavior plans when the live rule is no longer queueable", () => {
+  const decisions = [];
+  const controller = Object.create(SurvivalController.prototype);
+  controller.behaviorQueue = new BehaviorExecutionQueue();
+  controller.taskQueue = new LlmTaskQueue({ taskQueueEnabled: true });
+  controller.llmPlanner = { noteQueueDecision: (decision) => decisions.push(decision), publish() {} };
+  controller.logger = { warn() {}, debug() {} };
+  controller.config = { survival: { criticalHealth: 6, lowOxygenThreshold: 8, immediateThreatRadius: 8, lowFood: 14 } };
+  controller.emergencyBusy = false;
+  controller.getLivePlannerQueueContext = () => ({
+    ok: true,
+    snapshot: { health: 20, food: 20, oxygen: 20, environmentHazard: false, navigationTrap: false, isInLava: false, entities: [], inventory: {} },
+    ruleDecision: { type: "wait_out_night", reason: "night safety" }
+  });
+
+  controller.handlePlannerResult({
+    status: "ok",
+    plan: { id: "plan-stale-day", ruleDecision: "collect_wood", behaviorTrees: [{ taskType: "collect_wood" }] }
+  });
+
+  assert.equal(controller.behaviorQueue.getStatus().pendingTrees.length, 0);
+  assert.equal(decisions[0].accepted, false);
+  assert.match(decisions[0].reason, /live_rule_wait_out_night_not_queueable/);
+});
+
+test("controller supersedes old pending planner trees before queuing the newest live plan", () => {
+  const decisions = [];
+  const controller = Object.create(SurvivalController.prototype);
+  controller.behaviorQueue = new BehaviorExecutionQueue();
+  controller.taskQueue = new LlmTaskQueue({ taskQueueEnabled: true });
+  controller.llmPlanner = { noteQueueDecision: (decision) => decisions.push(decision), publish() {} };
+  controller.logger = { warn() {}, debug() {} };
+  controller.config = { survival: { criticalHealth: 6, lowOxygenThreshold: 8, immediateThreatRadius: 8, lowFood: 14 } };
+  controller.emergencyBusy = false;
+  controller.getLivePlannerQueueContext = () => ({
+    ok: true,
+    snapshot: { health: 20, food: 20, oxygen: 20, environmentHazard: false, navigationTrap: false, isInLava: false, entities: [], inventory: {} },
+    ruleDecision: { type: "collect_wood", reason: "need logs" }
+  });
+  controller.behaviorQueue.enqueuePlan({ behaviorTrees: [{ taskType: "explore" }] }, { source: "llm_planner", sourcePlanId: "plan-old" });
+
+  controller.handlePlannerResult({
+    status: "ok",
+    plan: { id: "plan-new", ruleDecision: "collect_wood", behaviorTrees: [{ taskType: "collect_wood" }] }
+  });
+  const status = controller.behaviorQueue.getStatus();
+
+  assert.deepEqual(status.pendingTrees.map((tree) => tree.taskType), ["collect_wood"]);
+  assert.equal(status.completedTrees[0].taskType, "explore");
+  assert.equal(status.completedTrees[0].status, "skipped");
+  assert.equal(status.completedTrees[0].lastReason, "planner_superseded");
+  assert.equal(decisions[0].accepted, true);
+});
+
+test("controller releases all active queue types when current work is interrupted", () => {
+  const controller = Object.create(SurvivalController.prototype);
+  controller.behaviorQueue = new BehaviorExecutionQueue();
+  controller.taskQueue = new LlmTaskQueue({ taskQueueEnabled: true });
+  controller.priorityTaskQueue = new PriorityTaskQueue({ allowedTasks: new Set(["explore", "collect_wood"]) });
+  controller.testTaskQueue = new PriorityTaskQueue({ allowedTasks: new Set(["explore", "collect_wood"]) });
+  controller.reportBehaviorTreeFeedback = () => {};
+  controller.publishTaskQueueStatus = () => {};
+  controller.logger = { warn() {} };
+
+  controller.behaviorQueue.enqueueTask("collect_wood");
+  controller.behaviorQueue.startNext({ ruleDecision: "collect_wood" });
+  controller.taskQueue.enqueuePlan({ tasks: ["explore"] });
+  controller.taskQueue.startNext({ ruleDecision: "explore" });
+  controller.priorityTaskQueue.insert("explore");
+  controller.priorityTaskQueue.startNext({ ruleDecision: "explore" });
+  controller.testTaskQueue.insert("collect_wood");
+  controller.testTaskQueue.startNext({ ruleDecision: "collect_wood" });
+
+  const released = controller.releaseCurrentQueuedWork("busy_trace_stale", { ruleDecision: "collect_wood" });
+
+  assert.equal(released, true);
+  assert.equal(controller.behaviorQueue.getStatus().currentTree, null);
+  assert.equal(controller.taskQueue.getStatus().currentTask, null);
+  assert.equal(controller.priorityTaskQueue.getStatus().currentTask, null);
+  assert.equal(controller.testTaskQueue.getStatus().currentTask, null);
+  assert.equal(controller.behaviorQueue.getStatus().completedTrees[0].status, "failed");
+  assert.equal(controller.priorityTaskQueue.getStatus().completedTasks[0].status, "failed");
+  assert.equal(controller.testTaskQueue.getStatus().completedTasks[0].status, "failed");
+});
+
+test("busy watchdog gives long safety tasks a wider running stale window", () => {
+  const controller = Object.create(SurvivalController.prototype);
+  controller.behaviorQueue = new BehaviorExecutionQueue();
+  controller.behaviorQueue.enqueueTask("wait_out_night");
+  controller.behaviorQueue.startNext({ ruleDecision: "wait_out_night" });
+  controller.config = { survival: { busyTraceStaleMs: 15000 } };
+  controller.emergencyBusy = false;
+  controller.busyWatchdogLastWarnAt = 0;
+  controller.lastAction = { type: "wait_out_night", startedAt: Date.now() - 30000 };
+  controller.taskTrace = { status: "running", taskType: "wait_out_night", updatedAt: new Date(Date.now() - 30000).toISOString() };
+  controller.publishControllerState = () => {};
+  controller.recordTaskObservation = () => {};
+  controller.markCurrentActionInterrupted = () => {};
+  controller.resetMotion = () => {};
+  controller.cancelCollectTask = async () => {};
+  controller.logger = { warn() {} };
+
+  const interrupted = controller.checkBusyWatchdog();
+
+  assert.equal(interrupted, false);
+  assert.equal(controller.behaviorQueue.getStatus().currentTree.taskType, "wait_out_night");
 });

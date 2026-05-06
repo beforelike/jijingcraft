@@ -91,6 +91,7 @@ function decideNextTask(snapshot, config) {
     && (cobblestoneCount >= 2 || countItems(inventory, PLANK_ITEMS) >= 2);
   const hasInventoryFood = hasAny(inventory, FOOD_ITEMS);
   const nightFoodBuffer = Math.max(survival.lowFood ?? 14, Math.min(20, survival.nightFoodBuffer ?? 18));
+  const lowOxygenThreshold = survival.lowOxygenThreshold ?? 8;
 
   if (snapshot.environmentHazard) {
     return { type: "escape_hazard", reason: `damaging block ${snapshot.environmentHazard.name} is too close` };
@@ -100,8 +101,16 @@ function decideNextTask(snapshot, config) {
     return { type: "escape_pit", reason: snapshot.navigationAnalysis?.summary ?? "bot appears trapped by local terrain" };
   }
 
-  if (snapshot.isInLava || snapshot.oxygen <= 8 || snapshot.timeSinceOnGround > 80) {
+  if (snapshot.isInLava || (snapshot.isBodyInWater && snapshot.oxygen <= lowOxygenThreshold) || snapshot.timeSinceOnGround > 80) {
     return { type: "escape_hazard", reason: "environment hazard detected" };
+  }
+
+  if (snapshot.terrain?.descent?.needsDescent && snapshot.terrain?.descent?.bestTarget) {
+    return {
+      type: "descend_from_platform",
+      reason: snapshot.terrain.descent.summary ?? "elevated platform descent target detected",
+      targetPosition: snapshot.terrain.descent.bestTarget.entryPosition ?? snapshot.terrain.descent.bestTarget.waterPosition ?? null
+    };
   }
 
   if (snapshot.health <= survival.criticalHealth && hasAny(inventory, FOOD_ITEMS)) {

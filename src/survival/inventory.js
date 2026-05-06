@@ -28,6 +28,7 @@ function inventoryFromBot(bot) {
 
 function firstInventoryItem(bot, names) {
   const wanted = new Set(Array.isArray(names) ? names : [names]);
+  if (bot.heldItem && wanted.has(bot.heldItem.name)) return bot.heldItem;
   return bot.inventory.items().find((item) => wanted.has(item.name));
 }
 

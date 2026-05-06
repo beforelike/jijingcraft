@@ -32,13 +32,15 @@ function createEmergencyShelterDoorwayPlan(base) {
 
 function createStarterShelterPlan(base) {
   const positions = [];
-  const radius = 2;
+  const radius = 3;
+  const wallHeight = 4;
+  const roofY = 4;
 
-  for (let y = 0; y <= 2; y++) {
+  for (let y = 0; y < wallHeight; y++) {
     for (let x = -radius; x <= radius; x++) {
       for (let z = -radius; z <= radius; z++) {
         const isWall = Math.abs(x) === radius || Math.abs(z) === radius;
-        const isDoorway = x === 0 && z === -radius && y <= 1;
+        const isDoorway = (x === 0 || x === 1) && z === -radius && y <= 1;
         if (isWall && !isDoorway) positions.push(base.offset(x, y, z));
       }
     }
@@ -46,7 +48,7 @@ function createStarterShelterPlan(base) {
 
   for (let x = -radius; x <= radius; x++) {
     for (let z = -radius; z <= radius; z++) {
-      positions.push(base.offset(x, 3, z));
+      positions.push(base.offset(x, roofY, z));
     }
   }
 
@@ -54,7 +56,12 @@ function createStarterShelterPlan(base) {
 }
 
 function createStarterShelterDoorwayPlan(base) {
-  return [base.offset(0, 0, -2), base.offset(0, 1, -2)];
+  return [
+    base.offset(0, 0, -3),
+    base.offset(0, 1, -3),
+    base.offset(1, 0, -3),
+    base.offset(1, 1, -3)
+  ];
 }
 
 function createStarterShelterDoorwaySealPlan(base) {

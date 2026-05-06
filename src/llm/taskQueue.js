@@ -165,10 +165,12 @@ class LlmTaskQueue {
   }
 
   clear(reason = "cleared") {
+    const removed = this.queue.length + (this.current ? 1 : 0);
     this.queue = [];
     this.current = null;
     this.activePlan = null;
-    this.lastEvent = { type: "cleared", reason, at: nowIso() };
+    this.lastEvent = { type: "cleared", reason, removed, at: nowIso() };
+    return { ...this.lastEvent };
   }
 
   getStatus() {

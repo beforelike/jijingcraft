@@ -13,7 +13,7 @@ const config = {
     shelterDefenseRadius: 4,
     foodStockTarget: 18,
     buildShelter: true,
-    shelterBlockTarget: 80,
+    shelterBlockTarget: 160,
     woolTarget: 3,
     plantCrops: true,
     cropPlotTarget: 6,
@@ -90,6 +90,42 @@ test("escapes a navigation pit before normal mining or crafting", () => {
   }), config);
   assert.equal(decision.type, "escape_pit");
   assert.match(decision.reason, /controlled_descent/);
+});
+
+test("does not escape ordinary water while oxygen buffer remains", () => {
+  const decision = decideNextTask(snapshot({ oxygen: 12, isBodyInWater: true, inventory: { oak_log: 1 } }), {
+    survival: { ...config.survival, lowOxygenThreshold: 8 }
+  });
+
+  assert.notEqual(decision.type, "escape_hazard");
+});
+
+test("escapes low oxygen before waiting for drowning damage", () => {
+  const decision = decideNextTask(snapshot({ oxygen: 8, isBodyInWater: true }), {
+    survival: { ...config.survival, lowOxygenThreshold: 8 }
+  });
+
+  assert.equal(decision.type, "escape_hazard");
+});
+
+test("descends from an elevated platform before collecting wood", () => {
+  const decision = decideNextTask(snapshot({
+    terrain: {
+      descent: {
+        needsDescent: true,
+        summary: "elevated platform: water landing 20 blocks below",
+        bestTarget: {
+          waterPosition: { x: 4, y: 60, z: 4 },
+          entryPosition: { x: 4, y: 61, z: 4 },
+          drop: 20
+        }
+      }
+    },
+    inventory: {}
+  }), config);
+
+  assert.equal(decision.type, "descend_from_platform");
+  assert.deepEqual(decision.targetPosition, { x: 4, y: 61, z: 4 });
 });
 
 test("evades hostile mobs before hunger and crafting tasks", () => {
@@ -321,7 +357,7 @@ test("collects stone before risky shelter material work when stone tools are mis
       wooden_sword: 1,
       crafting_table: 1,
       stick: 2,
-      dirt: 80,
+      dirt: 160,
       cooked_beef: 18
     }
   }), config);
@@ -351,7 +387,7 @@ test("rebuilds a fixed shelter when the remembered one is not usable nearby", ()
       cobblestone: 11,
       furnace: 1,
       cooked_beef: 18,
-      dirt: 80
+      dirt: 160
     },
     progress: {
       hasCraftingTable: true,
@@ -380,7 +416,7 @@ test("upgrades stone weapon and axe before spending all cobblestone on later goa
 test("mines advanced materials only after base preparation", () => {
   const decision = decideNextTask(snapshot({
     inventory: {
-      oak_planks: 80,
+      oak_planks: 160,
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,
@@ -398,7 +434,7 @@ test("mines advanced materials only after base preparation", () => {
 test("explores once base and advanced material goals are complete", () => {
   const decision = decideNextTask(snapshot({
     inventory: {
-      oak_planks: 80,
+      oak_planks: 160,
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,
@@ -449,7 +485,7 @@ test("collects building materials before building a starter shelter", () => {
 test("builds a starter shelter before open-ended exploration", () => {
   const decision = decideNextTask(snapshot({
     inventory: {
-      oak_planks: 80,
+      oak_planks: 160,
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,
@@ -466,7 +502,7 @@ test("builds a starter shelter at night when materials are ready", () => {
   const decision = decideNextTask(snapshot({
     isNight: true,
     inventory: {
-      oak_planks: 80,
+      oak_planks: 160,
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,

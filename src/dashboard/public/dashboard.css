@@ -129,6 +129,104 @@ h2 {
   gap: 12px;
 }
 
+.service-panel {
+  margin-bottom: 12px;
+}
+
+.service-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr) minmax(280px, 1.3fr);
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.service-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.service-state {
+  display: block;
+  margin: 5px 0 3px;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+
+.service-state.ok {
+  color: var(--green);
+}
+
+.service-state.warn {
+  color: var(--amber);
+}
+
+.service-state.bad {
+  color: var(--red);
+}
+
+.service-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+.service-actions button {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 7px 10px;
+  font-size: 0.84rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.service-actions button:hover {
+  border-color: var(--cyan);
+}
+
+.service-actions button:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.service-log {
+  display: grid;
+  gap: 6px;
+  max-height: 136px;
+  overflow: auto;
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
+}
+
+.service-log-row {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.service-log-row strong {
+  color: var(--cyan);
+}
+
+.service-log-row.warn strong {
+  color: var(--amber);
+}
+
+.service-log-row.error strong {
+  color: var(--red);
+}
+
+.service-log-row span {
+  overflow-wrap: anywhere;
+}
+
 .metrics {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   margin-bottom: 12px;
@@ -286,6 +384,64 @@ h2 {
 
 .bot-view-blocks-wrap {
   grid-column: span 1;
+}
+
+.terrain-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(260px, 1fr) minmax(240px, 0.8fr);
+  gap: 12px;
+}
+
+.terrain-grid > div {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+}
+
+.local-terrain-map {
+  --terrain-width: 11;
+  display: grid;
+  grid-template-columns: repeat(var(--terrain-width), minmax(18px, 1fr));
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.terrain-cell {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  line-height: 1;
+  color: var(--text);
+}
+
+.terrain-cell.safe {
+  background: rgba(107, 191, 142, 0.22);
+  border-color: rgba(107, 191, 142, 0.45);
+}
+
+.terrain-cell.water {
+  background: rgba(92, 169, 255, 0.22);
+  border-color: rgba(92, 169, 255, 0.45);
+}
+
+.terrain-cell.hazard {
+  background: rgba(255, 107, 107, 0.22);
+  border-color: rgba(255, 107, 107, 0.45);
+}
+
+.terrain-cell.blocked {
+  background: rgba(233, 201, 116, 0.18);
+  border-color: rgba(233, 201, 116, 0.4);
+}
+
+.terrain-cell.neutral {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .bottom-layout {
@@ -939,9 +1095,11 @@ h2 {
 
 @media (max-width: 1080px) {
   .metrics,
+  .service-grid,
   .layout,
   .bottom-layout,
   .llm-grid,
+  .terrain-grid,
   .trace-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -979,9 +1137,11 @@ h2 {
 
   .topbar,
   .metrics,
+  .service-grid,
   .layout,
   .bottom-layout,
   .llm-grid,
+  .terrain-grid,
   .trace-grid,
   .bot-view-grid {
     grid-template-columns: 1fr;

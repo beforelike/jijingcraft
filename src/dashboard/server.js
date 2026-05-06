@@ -51,6 +51,40 @@ function createRequestHandler(statusHub, control = {}) {
       return sendJson(response, 200, statusHub.getSnapshot());
     }
 
+    if (requestUrl.pathname === "/api/services") {
+      if (request.method !== "GET") {
+        return sendJson(response, 405, { ok: false, error: "method_not_allowed" });
+      }
+      const snapshot = statusHub.getSnapshot();
+      const services = await control.serviceManager?.getStatus?.({
+        connection: snapshot.connection,
+        dashboardUrl: control.dashboardUrl?.() ?? null
+      });
+      return sendJson(response, 200, services ?? {
+        dashboard: { status: "running", url: control.dashboardUrl?.() ?? null },
+        minecraftBot: { status: snapshot.connection?.state ?? "unknown" },
+        pythonBrain: { enabled: false, managed: false, status: "unconfigured", health: { ok: false, error: "unconfigured" }, logs: [] }
+      });
+    }
+
+    if (requestUrl.pathname === "/api/services/python-brain") {
+      if (request.method !== "POST") {
+        return sendJson(response, 405, { ok: false, error: "method_not_allowed" });
+      }
+      if (!control.serviceManager?.handleAction) {
+        return sendJson(response, 404, { ok: false, error: "service_manager_unavailable" });
+      }
+      try {
+        const body = await readRequestBody(request);
+        const payload = body ? JSON.parse(body) : {};
+        const action = String(payload.action ?? "health").toLowerCase();
+        const result = await control.serviceManager.handleAction(action);
+        return sendJson(response, result.ok ? 200 : 400, result);
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error.message });
+      }
+    }
+
     if (requestUrl.pathname === "/api/control/time") {
       if (request.method !== "POST") {
         return sendJson(response, 405, { ok: false, error: "method_not_allowed" });
@@ -249,7 +283,10 @@ function createDashboardServer(statusHub, config = {}, logger = console, control
 
       for (let offset = 0; offset <= 10; offset++) {
         const candidatePort = requestedPort + offset;
-        const server = http.createServer(createRequestHandler(statusHub, control));
+        const server = http.createServer(createRequestHandler(statusHub, {
+          ...control,
+          dashboardUrl: () => this.url()
+        }));
         try {
           await listen(server, host, candidatePort);
           activeServer = server;

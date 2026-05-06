@@ -1,15 +1,4 @@
-"""
-Individual agent implementations.
-
-Each agent is a single async coroutine that:
-  1. Decides whether it should be active based on the snapshot.
-  2. If active, builds a system+user prompt and calls the LLM.
-  3. Parses the JSON response into BehaviorTreeRequest objects.
-  4. Returns an AgentProposal.
-
-Agents never call Mineflayer directly – they only output task requests.
-The Node.js BehaviorExecutionQueue handles execution.
-"""
+"""Concurrent agent coroutines for Python Smart Brain."""
 
 from __future__ import annotations
 
@@ -17,291 +6,190 @@ import json
 import time
 from typing import Any
 
+from .config import BrainConfig
 from .llm_client import LLMClient
-from .models import AgentProposal, BehaviorTreeRequest, BotSnapshot
+from .models import AgentProposal, BehaviorTreeRequest, BrainRequest
+from .task_catalog import AGENT_SPECS, AgentSpec, allowed_tasks, normalize_task_type
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-_ALLOWED_TASKS = {
-    "safety_agent": ["escape_hazard", "escape_pit", "eat_food", "recover_starvation"],
-    "combat_agent": ["evade_hostiles", "defend_shelter", "defend_self"],
-    "survival_agent": ["hunt_food", "collect_wood", "explore", "wait_out_night", "hold_position"],
-    "engineering_agent": [
-        "craft_basic_supplies", "craft_basic_tools", "collect_stone",
-        "craft_stone_tools", "craft_furnace", "craft_weapon",
-        "collect_building_materials", "build_shelter",
-        "collect_wool", "craft_bed",
-    ],
-}
+def _truncate_json(value: Any, max_chars: int) -> str:
+    text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
+    return text if len(text) <= max_chars else f"{text[:max_chars]}..."
 
 
-def _parse_trees(raw: Any, agent_id: str) -> list[BehaviorTreeRequest]:
-    """
-    Parse LLM output into BehaviorTreeRequest list.
-    Accepts:
-      - JSON object with taskRequests / behaviorTrees key
-      - JSON array of task objects
-      - Plain text with a JSON code block
-    """
-    if isinstance(raw, str):
-        text = raw.strip()
-        # strip markdown code fences
-        for prefix in ("```json", "```"):
-            if text.startswith(prefix):
-                text = text[len(prefix):]
-        text = text.rstrip("`").strip()
-        try:
-            raw = json.loads(text)
-        except json.JSONDecodeError:
-            # Try to extract first JSON object
-            start = text.find("{")
-            end = text.rfind("}")
-            if start >= 0 and end > start:
-                try:
-                    raw = json.loads(text[start : end + 1])
-                except json.JSONDecodeError:
-                    return []
-            else:
-                return []
-
-    trees: list[dict] = []
-    if isinstance(raw, dict):
-        trees = raw.get("behaviorTrees") or raw.get("taskRequests") or []
-        if isinstance(trees, dict):
-            trees = [trees]
-    elif isinstance(raw, list):
-        trees = raw
-
-    results = []
-    allowed = _ALLOWED_TASKS.get(agent_id, [])
-    for item in trees:
-        if not isinstance(item, dict):
-            continue
-        task_type = item.get("taskType") or item.get("task_type") or ""
-        if not task_type:
-            continue
-        if allowed and task_type not in allowed:
-            continue  # reject tasks outside the agent's domain
-        results.append(
-            BehaviorTreeRequest.from_task(
-                task_type,
-                source_agent=agent_id,
-                reason=item.get("reason"),
-                constructor_args=item.get("constructorArgs") or item.get("parameters") or {},
-            )
-        )
-    return results
+def _compact_context(request: BrainRequest, cfg: BrainConfig) -> str:
+    context = request.plannerContext or {}
+    if not context:
+        context = {
+            "bot": request.snapshot.model_dump(),
+            "ruleDecision": request.ruleDecision.model_dump() if request.ruleDecision else None,
+            "progress": request.progress,
+            "taskFeedback": request.taskFeedback.model_dump(),
+        }
+    return _truncate_json(context, cfg.max_context_chars)
 
 
-def _snapshot_summary(s: BotSnapshot) -> str:
-    inv_top = sorted(s.inventory.items(), key=lambda x: -x[1])[:12]
-    hostile_names = [e.name for e in s.entities if e.hostile][:6]
-    return (
-        f"health={s.health}/20 food={s.food}/20 isDay={s.isDay} "
-        f"pos=({s.position.x:.0f},{s.position.y:.0f},{s.position.z:.0f})\n"
-        f"hostiles={hostile_names}\n"
-        f"inventory={dict(inv_top)}\n"
-        f"ruleDecision={s.ruleDecision.model_dump() if s.ruleDecision else None}"
-    ) if s.position else "(no position)"
+def _activation_reason(spec: AgentSpec, request: BrainRequest) -> str | None:
+    rule_type = request.ruleDecision.type if request.ruleDecision else None
+    snapshot = request.snapshot
+    if rule_type in spec.tasks:
+        return f"rule_decision:{rule_type}"
+    if spec.agent_id == "safety_agent":
+        terrain = (request.plannerContext or {}).get("world", {}).get("terrain", {})
+        if isinstance(terrain, dict) and isinstance(terrain.get("descent"), dict) and terrain["descent"].get("needsDescent"):
+            return "platform_descent"
+        if snapshot.environmentHazard or snapshot.navigationTrap or snapshot.isInLava:
+            return "environment_safety"
+        if snapshot.health_critical or snapshot.food_low or snapshot.oxygen_low:
+            return "vitals_safety"
+    if spec.agent_id == "combat_agent" and snapshot.hostile_nearby:
+        return "hostile_nearby"
+    if spec.agent_id == "survival_agent":
+        hard_rule = rule_type in ("escape_hazard", "escape_pit", "descend_from_platform", "eat_food", "recover_starvation", "evade_hostiles", "defend_shelter", "defend_self")
+        return None if hard_rule else "baseline_survival"
+    if spec.agent_id == "engineering_agent":
+        inventory = request.snapshot.inventory
+        has_materials = any(count > 0 for name, count in inventory.items() if any(token in name for token in ("log", "planks", "cobblestone", "stone", "wool")))
+        if has_materials:
+            return "materials_available"
+    return None
 
 
-# ---------------------------------------------------------------------------
-# Agent coroutines
-# ---------------------------------------------------------------------------
-
-async def run_safety_agent(snapshot: BotSnapshot, client: LLMClient) -> AgentProposal:
-    agent_id = "safety_agent"
-    t0 = time.monotonic()
-
-    active = snapshot.health_critical or snapshot.food_low or snapshot.hostile_nearby
-    if not active:
-        rule = snapshot.ruleDecision
-        if rule and rule.type in ("escape_hazard", "escape_pit", "eat_food", "recover_starvation"):
-            active = True
-
-    if not active:
-        return AgentProposal(agentId=agent_id, active=False, reason="no_immediate_threat")
-
-    system = (
-        "You are the Safety Agent for a Minecraft survival BOT. "
-        "Your ONLY job is to select 1-2 urgent tasks from this whitelist: "
-        + str(_ALLOWED_TASKS[agent_id])
-        + ". Output valid JSON: {\"behaviorTrees\": [{\"taskType\": \"...\", \"reason\": \"...\"}]}. "
-        "No prose, no markdown explanations outside the JSON."
-    )
-    user = (
-        "Current BOT state:\n" + _snapshot_summary(snapshot)
-        + "\n\nSelect the most urgent safety task(s). If none apply, return {\"behaviorTrees\": []}."
-    )
-
-    resp = await client.chat([
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ])
-    dur = (time.monotonic() - t0) * 1000
-    trees = _parse_trees(resp.get("content", ""), agent_id) if resp["ok"] else []
-    return AgentProposal(
-        agentId=agent_id,
-        active=True,
-        reason="threat_detected",
-        trees=trees,
-        durationMs=dur,
-    )
-
-
-async def run_combat_agent(snapshot: BotSnapshot, client: LLMClient) -> AgentProposal:
-    agent_id = "combat_agent"
-    t0 = time.monotonic()
-
-    active = snapshot.hostile_nearby or (
-        snapshot.ruleDecision and snapshot.ruleDecision.type in _ALLOWED_TASKS[agent_id]
-    )
-    if not active:
-        return AgentProposal(agentId=agent_id, active=False, reason="no_combat_needed")
-
-    system = (
-        "You are the Combat Agent. Choose 1 task from: " + str(_ALLOWED_TASKS[agent_id])
-        + ". Output: {\"behaviorTrees\": [{\"taskType\": \"...\", \"reason\": \"...\"}]}. JSON only."
-    )
-    user = "State:\n" + _snapshot_summary(snapshot)
-
-    resp = await client.chat([
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ])
-    dur = (time.monotonic() - t0) * 1000
-    trees = _parse_trees(resp.get("content", ""), agent_id) if resp["ok"] else []
-    return AgentProposal(agentId=agent_id, active=True, reason="combat", trees=trees, durationMs=dur)
-
-
-async def run_survival_agent(snapshot: BotSnapshot, client: LLMClient) -> AgentProposal:
-    agent_id = "survival_agent"
-    t0 = time.monotonic()
-
-    # Active unless an urgent safety/combat task dominates
-    rule = snapshot.ruleDecision
-    skip = rule and rule.type in (
-        *_ALLOWED_TASKS["safety_agent"],
-        *_ALLOWED_TASKS["combat_agent"],
-    )
-    if skip:
-        return AgentProposal(agentId=agent_id, active=False, reason="safety_or_combat_priority")
-
-    system = (
-        "You are the Survival Agent. Plan 1-2 tasks from: " + str(_ALLOWED_TASKS[agent_id])
-        + ".\nInventory context matters: if wood is low pick collect_wood, if food is low pick hunt_food.\n"
-        "Output: {\"behaviorTrees\": [{\"taskType\": \"...\", \"reason\": \"...\", "
-        "\"constructorArgs\": {\"count\": 4}}]}. JSON only."
-    )
-    user = "State:\n" + _snapshot_summary(snapshot)
-
-    resp = await client.chat([
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ])
-    dur = (time.monotonic() - t0) * 1000
-    trees = _parse_trees(resp.get("content", ""), agent_id) if resp["ok"] else []
-    return AgentProposal(agentId=agent_id, active=True, reason="survival_planning", trees=trees, durationMs=dur)
-
-
-async def run_engineering_agent(snapshot: BotSnapshot, client: LLMClient) -> AgentProposal:
-    agent_id = "engineering_agent"
-    t0 = time.monotonic()
-
-    inv = snapshot.inventory
-    has_wood = snapshot.has_wood
-    has_sticks = inv.get("stick", 0) >= 2
-    has_planks = any(v > 0 for k, v in inv.items() if "planks" in k)
-    has_basic_tools = any(
-        inv.get(t, 0) > 0
-        for t in ("wooden_pickaxe", "stone_pickaxe", "iron_pickaxe")
-    )
-
-    # Engineering agent only activates if resources allow crafting
-    if not (has_wood or has_planks or has_sticks or has_basic_tools):
-        return AgentProposal(agentId=agent_id, active=False, reason="insufficient_resources")
-
-    system = (
-        "You are the Engineering Agent. Select 1 crafting/building task from: "
-        + str(_ALLOWED_TASKS[agent_id])
-        + ".\nConsider inventory carefully. Do not request tasks that need materials the bot lacks.\n"
-        "Output: {\"behaviorTrees\": [{\"taskType\": \"...\", \"reason\": \"...\"}]}. JSON only."
-    )
-    user = "State:\n" + _snapshot_summary(snapshot)
-
-    resp = await client.chat([
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ])
-    dur = (time.monotonic() - t0) * 1000
-    trees = _parse_trees(resp.get("content", ""), agent_id) if resp["ok"] else []
-    return AgentProposal(agentId=agent_id, active=True, reason="engineering", trees=trees, durationMs=dur)
-
-
-async def run_general_agent(
-    snapshot: BotSnapshot,
-    client: LLMClient,
-    sub_proposals: list[AgentProposal],
-) -> AgentProposal:
-    """
-    General agent: synthesises sub-agent proposals and the world state into a
-    final prioritised list of BehaviorTreeRequests.
-    Always runs, regardless of the world state.
-    """
-    agent_id = "general_agent"
-    t0 = time.monotonic()
-
-    sub_summary = []
-    for p in sub_proposals:
-        if p.active and p.trees:
-            sub_summary.append({
-                "agent": p.agentId,
-                "tasks": [{"taskType": t.taskType, "reason": t.reason} for t in p.trees],
-            })
-
-    all_tasks = [t for t in _ALLOWED_TASKS.values() for t in t]
-
-    system = (
-        "You are the General Agent coordinating a Minecraft survival BOT. "
-        "Sub-agents have proposed tasks. Your job: merge, prioritise, and output the final task list.\n"
-        "Rules:\n"
-        "- Safety tasks always come first.\n"
-        "- Keep only tasks from this whitelist: " + str(all_tasks) + "\n"
-        "- Return at most 3 tasks.\n"
-        "- Output: {\"stageAssessment\": \"...\", "
-        "\"behaviorTrees\": [{\"taskType\": \"...\", \"reason\": \"...\", \"constructorArgs\": {}}]}. "
-        "JSON only."
-    )
-    user = (
-        "State:\n" + _snapshot_summary(snapshot)
-        + "\n\nSub-agent proposals:\n" + json.dumps(sub_summary, ensure_ascii=False)
-    )
-
-    resp = await client.chat([
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ])
-    dur = (time.monotonic() - t0) * 1000
-
-    content = resp.get("content", "") if resp["ok"] else ""
-    raw = content
+def _extract_json(raw: Any) -> Any:
+    if not isinstance(raw, str):
+        return raw
+    text = raw.strip()
+    if text.startswith("```json"):
+        text = text[7:].strip()
+    elif text.startswith("```"):
+        text = text[3:].strip()
+    if text.endswith("```"):
+        text = text[:-3].strip()
     try:
-        parsed = json.loads(content) if isinstance(content, str) else content
+        return json.loads(text)
     except json.JSONDecodeError:
-        parsed = content
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError:
+                return None
+    return None
 
-    stage = ""
-    if isinstance(parsed, dict):
-        stage = parsed.get("stageAssessment", "")
 
-    trees = _parse_trees(raw, "general_agent")
-    return AgentProposal(
-        agentId=agent_id,
-        active=True,
-        reason="coordination",
-        trees=trees,
-        durationMs=dur,
-    ), stage
+def parse_behavior_trees(raw: Any, *, source_agent: str, allowed: set[str] | None = None) -> tuple[list[BehaviorTreeRequest], str]:
+    payload = _extract_json(raw)
+    if payload is None:
+        return [], ""
+
+    stage = payload.get("stageAssessment", "") if isinstance(payload, dict) else ""
+    entries: list[Any] = []
+    if isinstance(payload, dict):
+        for key in ("behaviorTrees", "taskRequests", "tasks"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                entries.extend(value)
+            elif isinstance(value, dict):
+                entries.append(value)
+    elif isinstance(payload, list):
+        entries = payload
+
+    trees: list[BehaviorTreeRequest] = []
+    for index, item in enumerate(entries):
+        if isinstance(item, str):
+            task_type = item
+            constructor_args: dict[str, Any] = {}
+            reason = None
+        elif isinstance(item, dict):
+            task_type = item.get("taskType") or item.get("type") or item.get("action") or item.get("name")
+            constructor_args = item.get("constructorArgs") or item.get("parameters") or item.get("args") or {}
+            reason = item.get("reason") or item.get("objective")
+        else:
+            continue
+
+        normalized = normalize_task_type(task_type)
+        if not normalized or (allowed is not None and normalized not in allowed):
+            continue
+        tree = BehaviorTreeRequest.from_task(
+            normalized,
+            source_agent=source_agent,
+            requested_by="general_agent" if source_agent != "general_agent" else "general_agent",
+            reason=reason,
+            constructor_args=constructor_args if isinstance(constructor_args, dict) else {},
+            task_request_id=f"{source_agent}:{index}",
+            preconditions=item.get("preconditions", []) if isinstance(item, dict) else [],
+            postconditions=(item.get("postconditions") or item.get("successCriteria") or []) if isinstance(item, dict) else [],
+        )
+        if tree:
+            trees.append(tree)
+    return trees, stage
+
+
+async def run_domain_agent(spec: AgentSpec, request: BrainRequest, client: LLMClient, cfg: BrainConfig) -> AgentProposal:
+    started_at = time.monotonic()
+    reason = _activation_reason(spec, request)
+    if reason is None:
+        return AgentProposal(agentId=spec.agent_id, active=False, reason="inactive")
+
+    system = (
+        f"You are {spec.title} for a Minecraft survival bot. "
+        f"You may only request tasks from this whitelist: {list(spec.tasks)}. "
+        "Output strict JSON only: {\"behaviorTrees\":[{\"taskType\":\"...\",\"reason\":\"...\",\"constructorArgs\":{}}]}. "
+        "Do not write chain-of-thought, prose, JavaScript, or Mineflayer calls. "
+        "Use the minecraftWiki field in context for MC survival rules; ordinary water with oxygen remaining is not a hazard and water columns are not escape pits. "
+        f"Domain rule: {spec.prompt_hint}"
+    )
+    user = f"Activation reason: {reason}\nCurrent compact context JSON:\n{_compact_context(request, cfg)}"
+    response = await client.chat([
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ])
+    duration_ms = (time.monotonic() - started_at) * 1000
+    if not response.get("ok"):
+        return AgentProposal(agentId=spec.agent_id, active=True, reason=reason, durationMs=duration_ms, error=response.get("error", "llm_error"))
+
+    trees, _stage = parse_behavior_trees(response.get("content", ""), source_agent=spec.agent_id, allowed=set(spec.tasks))
+    return AgentProposal(agentId=spec.agent_id, active=True, reason=reason, trees=trees, durationMs=duration_ms)
+
+
+async def run_general_agent(request: BrainRequest, client: LLMClient, cfg: BrainConfig, proposals: list[AgentProposal]) -> tuple[AgentProposal, str]:
+    started_at = time.monotonic()
+    sub_summary = [
+        {
+            "agentId": proposal.agentId,
+            "active": proposal.active,
+            "reason": proposal.reason,
+            "trees": [tree.model_dump(exclude_none=True) for tree in proposal.trees],
+            "error": proposal.error,
+        }
+        for proposal in proposals
+        if proposal.active
+    ]
+    system = (
+        "You are the General Agent coordinating concurrent Minecraft survival sub-agents. "
+        "Merge their proposals into the final executable behavior tree instances. "
+        f"Keep only tasks from this whitelist: {allowed_tasks()}. "
+        "Safety and starvation recovery outrank progress. Do not repeat blocked tasks from taskFeedback. "
+        "Use minecraftWiki in context; do not treat ordinary water with oxygen remaining as escape_hazard or escape_pit. "
+        "Return strict JSON only with stageAssessment and behaviorTrees. No prose or hidden reasoning."
+    )
+    user = (
+        "Compact context JSON:\n"
+        f"{_compact_context(request, cfg)}\n\n"
+        "Sub-agent proposals JSON:\n"
+        f"{_truncate_json(sub_summary, cfg.max_context_chars)}"
+    )
+    response = await client.chat([
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ])
+    duration_ms = (time.monotonic() - started_at) * 1000
+    if not response.get("ok"):
+        return AgentProposal(agentId="general_agent", active=True, reason="coordination", durationMs=duration_ms, error=response.get("error", "llm_error")), ""
+    trees, stage = parse_behavior_trees(response.get("content", ""), source_agent="general_agent", allowed=set(allowed_tasks()))
+    return AgentProposal(agentId="general_agent", active=True, reason="coordination", trees=trees, durationMs=duration_ms), stage
+
+
+def all_agent_specs() -> list[AgentSpec]:
+    return list(AGENT_SPECS.values())

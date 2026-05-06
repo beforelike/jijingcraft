@@ -9,6 +9,7 @@ const NON_BLOCKING_NODE_FAILURES = new Set(["low_oxygen_escape", "target_unreach
 const DEFAULT_TASK_PRIORITIES = Object.freeze({
   escape_hazard: 1000,
   escape_pit: 990,
+  descend_from_platform: 985,
   eat_food: 980,
   recover_starvation: 970,
   evade_hostiles: 960,
@@ -39,6 +40,7 @@ const DEFAULT_TASK_PRIORITIES = Object.freeze({
 const TASK_LABELS = Object.freeze({
   escape_hazard: "脱离危险方块",
   escape_pit: "脱离地形陷阱",
+  descend_from_platform: "高台下降",
   eat_food: "紧急进食",
   recover_starvation: "饥饿危机稳定",
   evade_hostiles: "规避敌对生物",
@@ -139,6 +141,16 @@ const TREE_TEMPLATES = Object.freeze({
       { id: "choose_route", label: "选择脱困路线", kind: "setup", handler: "choose_escape_route", phaseId: "choose_route" },
       { id: "execute_escape", label: "执行脱困动作", kind: "action", handler: "execute_task", phaseId: "controlled_descent" },
       { id: "verify_navigation_safe", label: "验证已离开陷阱", kind: "check", handler: "verify_navigation_safe", phaseId: "verify" }
+    ]
+  },
+  descend_from_platform: {
+    preconditions: ["elevated_platform_detected", "descent_target_visible"],
+    postconditions: ["platform_left_or_descent_progress"],
+    nodes: [
+      { id: "scan_descent", label: "扫描平台下方水坑", kind: "sense", handler: "scan_descent_target", phaseId: "scan_environment" },
+      { id: "approach_edge", label: "移动到安全边缘", kind: "move", handler: "approach_descent_edge", phaseId: "approach_edge" },
+      { id: "descend", label: "执行高台下降", kind: "action", handler: "execute_task", phaseId: "controlled_descent" },
+      { id: "verify_descent", label: "验证已离开高台", kind: "check", handler: "verify_navigation_safe", phaseId: "verify" }
     ]
   },
   eat_food: {
@@ -403,6 +415,23 @@ const DEFAULT_ACTION_HANDLERS = {
       route: analysis?.recommendedAction ?? "controller_escape_pit",
       options: analysis?.routeOptions ?? []
     });
+    return true;
+  },
+
+  async scan_descent_target({ controller, context }) {
+    const targets = controller.findWaterDescentTargets?.(controller.bot?.entity?.position, 16, 96) ?? [];
+    context.descentTargets = targets;
+    controller.recordTaskObservation?.("behavior_tree", "platform descent scan completed", {
+      targetCount: targets.length,
+      bestTarget: targets[0] ?? null
+    });
+    return targets.length ? true : { ok: false, reason: "no_water_descent_target" };
+  },
+
+  async approach_descent_edge({ controller, context }) {
+    const bestTarget = context.descentTargets?.[0] ?? null;
+    if (!bestTarget) return { ok: false, reason: "no_descent_target" };
+    controller.recordTaskObservation?.("behavior_tree", "platform descent edge delegated to primitive", { bestTarget });
     return true;
   },
 

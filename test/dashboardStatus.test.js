@@ -45,6 +45,22 @@ test("behavior tree exposes terrain escape phases", () => {
   assert.equal(activeNode.phases.find((phase) => phase.id === "controlled_descent").active, true);
 });
 
+test("behavior tree exposes platform descent phases", () => {
+  const tree = createBehaviorTree("descend_from_platform", {
+    taskType: "descend_from_platform",
+    activePhaseId: "approach_edge",
+    phaseEvents: [
+      { id: "scan_environment", status: "completed" },
+      { id: "approach_edge", status: "active" }
+    ]
+  });
+  const activeNode = flattenBehaviorTree(tree).find((node) => node.id === "descend_from_platform");
+
+  assert.equal(activeNode.label, "高台下降");
+  assert.equal(activeNode.phases.find((phase) => phase.id === "scan_environment").status, "completed");
+  assert.equal(activeNode.phases.find((phase) => phase.id === "approach_edge").active, true);
+});
+
 test("dashboard state publishes sanitized bot status", () => {
   const dashboard = createDashboardState({ host: "localhost", port: 8000, username: "TestBot" });
   dashboard.setConnection({ state: "connected", minecraftVersion: "1.21.11" });
@@ -85,10 +101,53 @@ test("dashboard state publishes sanitized bot status", () => {
         eye: new Vec3(1.25, 65.6, -2.75),
         direction: new Vec3(0.98, 0.2, 0.01),
         targetEntity: { name: "zombie", distance: 7.42, position: new Vec3(4, 64, 0) },
-        frontBlocks: [
-          { distance: 1, name: "air", solid: false, diggable: false, position: new Vec3(2, 65, -3) },
-          { distance: 2, name: "spruce_log", solid: true, diggable: true, position: new Vec3(3, 65, -3) }
-        ]
+        frontBlocks: Array.from({ length: 12 }, (_, index) => ({
+          distance: index + 1,
+          name: index === 1 ? "spruce_log" : "air",
+          solid: index === 1,
+          diggable: index !== 0,
+          position: new Vec3(index + 2, 65, -3)
+        }))
+      },
+      terrain: {
+        sampleRadius: 6,
+        primaryGround: "stone",
+        ground: [{ name: "stone", count: 8 }],
+        safeStandCount: 6,
+        waterSamples: 1,
+        damagingSamples: 0,
+        nearbyWater: [{ name: "water", position: new Vec3(4, 60, 4) }],
+        nearbyLogs: [],
+        exactLocal: {
+          radius: 5,
+          width: 11,
+          center: new Vec3(1, 64, -3),
+          safeStandCount: 80,
+          waterCount: 3,
+          hazardCount: 0,
+          groundCounts: [{ name: "stone", count: 80 }],
+          cells: [
+            { dx: 0, dz: 0, position: new Vec3(1, 64, -3), ground: "stone", feet: "air", head: "air", safeStand: true, water: false, hazard: false },
+            { dx: 1, dz: 0, position: new Vec3(2, 64, -3), ground: "water", feet: "air", head: "air", safeStand: false, water: true, hazard: false }
+          ]
+        },
+        regional: {
+          radius: 100,
+          diameter: 200,
+          step: 10,
+          sampleCount: 120,
+          waterCells: 8,
+          hazardCells: 0,
+          safeCells: 90,
+          topBlocks: [{ name: "stone", count: 60 }, { name: "water", count: 8 }],
+          cells: [{ dx: 0, dz: 0, position: new Vec3(1, 63, -3), topBlock: "stone", water: false, hazard: false, safeStand: true }]
+        },
+        descent: {
+          needsDescent: true,
+          summary: "elevated platform: water landing 20 blocks below",
+          bestTarget: { waterPosition: new Vec3(4, 60, 4), entryPosition: new Vec3(4, 61, 4), horizontalDistance: 5, drop: 20, route: "water_landing" },
+          targets: []
+        }
       },
       experience: { level: 1 },
       progress: { hasStarterShelter: false, achievedMilestones: ["wood_age"] }
@@ -120,7 +179,8 @@ test("dashboard state publishes sanitized bot status", () => {
     },
     memory: {
       knownBlocks: { crafting_table: [{ position: { x: 1, y: 64, z: 1 } }] },
-      learning: { policyStats: {}, avoidedPositions: [] }
+      learning: { policyStats: {}, avoidedPositions: [] },
+      exploration: { visited: [{ position: { x: 1, y: 64, z: -3 }, dimension: "overworld" }], coarseCells: { "overworld:0:0": { position: { x: 0, y: 63, z: 0 }, topBlock: "stone" } } }
     },
     dimension: "overworld",
     controller: {
@@ -135,7 +195,7 @@ test("dashboard state publishes sanitized bot status", () => {
       testTasks: { pendingTasks: [{ type: "escape_hazard", status: "pending", priority: 100 }] },
       behaviorQueue: {
         active: true,
-        currentTree: { id: "bt-1", taskType: "collect_wood", priority: 620, status: "in_progress", sourceAgent: "survival_agent", nodes: [{ id: "locate_low_log", label: "定位低位可达树干", kind: "sense" }] },
+        currentTree: { id: "bt-1", taskType: "collect_wood", priority: 620, status: "in_progress", sourceAgent: "survival_agent", createdAt: "2026-05-06T17:00:00.000Z", expiresAt: "2026-05-06T17:05:00.000Z", startedAt: "2026-05-06T17:01:00.000Z", nodes: [{ id: "locate_low_log", label: "定位低位可达树干", kind: "sense" }] },
         pendingTrees: [],
         completedTrees: [],
         feedback: [{ taskType: "collect_wood", outcome: "started" }]
@@ -160,11 +220,18 @@ test("dashboard state publishes sanitized bot status", () => {
   assert.equal(status.botPerspective.heading, "东");
   assert.equal(status.botPerspective.targetEntity.name, "zombie");
   assert.equal(status.botPerspective.frontBlocks[1].name, "spruce_log");
+  assert.equal(status.botPerspective.frontBlocks.length, 12);
+  assert.equal(status.world.terrain.exactLocal.width, 11);
+  assert.equal(status.world.terrain.regional.diameter, 200);
+  assert.equal(status.world.terrain.descent.bestTarget.drop, 20);
+  assert.equal(status.memory.exploration.coarseCellCount, 1);
   assert.equal(status.controller.forcedTask.taskType, "hunt_food");
   assert.equal(status.controller.taskFeedback.blockedTasks[0].taskType, "hunt_food");
   assert.equal(status.controller.taskFeedback.recentFailures[0].position.text, "4, 80, 4");
   assert.equal(status.controller.testTasks.pendingTasks[0].type, "escape_hazard");
   assert.equal(status.controller.behaviorQueue.currentTree.taskType, "collect_wood");
+  assert.equal(status.controller.behaviorQueue.currentTree.startedAt, "2026-05-06T17:01:00.000Z");
+  assert.equal(status.controller.behaviorQueue.currentTree.expiresAt, "2026-05-06T17:05:00.000Z");
   assert.equal(status.controller.agents.agents[0].id, "survival_agent");
   assert.equal(status.world.navigationAnalysis.kind, "elevated_support_column");
   assert.equal(status.world.navigationAnalysis.recommendedAction, "controlled_descent");

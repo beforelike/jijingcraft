@@ -202,6 +202,54 @@ test("time control API validates mode and bot availability", async () => {
   assert.equal(JSON.parse(invalidModeResponse.body).error, "invalid_time_mode");
 });
 
+test("service status API exposes dashboard bot and Python Brain state", async () => {
+  const serviceManager = {
+    async getStatus(extra) {
+      return {
+        dashboard: { status: "running", url: extra.dashboardUrl },
+        minecraftBot: { status: extra.connection.state, username: extra.connection.username },
+        pythonBrain: { enabled: true, status: "reachable", health: { ok: true }, logs: [] }
+      };
+    }
+  };
+  const handler = createRequestHandler({
+    getSnapshot: () => ({ connection: { state: "connected", username: "TestBot" } })
+  }, {
+    serviceManager,
+    dashboardUrl: () => "http://127.0.0.1:3000"
+  });
+
+  const response = await invoke(handler, { method: "GET", url: "/api/services" });
+  const body = JSON.parse(response.body);
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.dashboard.status, "running");
+  assert.equal(body.minecraftBot.status, "connected");
+  assert.equal(body.pythonBrain.health.ok, true);
+});
+
+test("Python Brain service API delegates control actions", async () => {
+  let actionSeen = null;
+  const handler = createRequestHandler({ getSnapshot: () => ({ connection: { state: "connected" } }) }, {
+    serviceManager: {
+      async handleAction(action) {
+        actionSeen = action;
+        return { ok: true, status: "started" };
+      }
+    }
+  });
+
+  const response = await invoke(handler, {
+    method: "POST",
+    url: "/api/services/python-brain",
+    body: JSON.stringify({ action: "start" })
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(actionSeen, "start");
+  assert.equal(JSON.parse(response.body).status, "started");
+});
+
 test("dashboard static resources include the Agent mind map monitor", async () => {
   const handler = createRequestHandler({ getSnapshot: () => ({ ok: true }) });
 
@@ -210,6 +258,8 @@ test("dashboard static resources include the Agent mind map monitor", async () =
   const stylesheet = await invoke(handler, { method: "GET", url: "/dashboard.css" });
 
   assert.equal(page.statusCode, 200);
+  assert.match(page.body, /服务管理/);
+  assert.match(page.body, /data-python-brain-action="start"/);
   assert.match(page.body, /Agent 思维导图/);
   assert.match(page.body, /agentMindMap/);
   assert.equal(script.statusCode, 200);
@@ -219,7 +269,11 @@ test("dashboard static resources include the Agent mind map monitor", async () =
   assert.match(script.body, /ruleDecision\.type/);
   assert.match(script.body, /constructorArgs/);
   assert.match(script.body, /队列 -> Controller -> 反馈/);
+  assert.match(script.body, /renderServices/);
+  assert.match(script.body, /\/api\/services\/python-brain/);
   assert.equal(stylesheet.statusCode, 200);
+  assert.match(stylesheet.body, /service-grid/);
+  assert.match(stylesheet.body, /service-state/);
   assert.match(stylesheet.body, /agent-map-flow/);
   assert.match(stylesheet.body, /agent-map-node\.edge/);
 });

@@ -1,6 +1,7 @@
 const ALLOWED_TASKS = [
   "escape_hazard",
   "escape_pit",
+  "descend_from_platform",
   "evade_hostiles",
   "defend_shelter",
   "defend_self",
@@ -29,6 +30,24 @@ const ALLOWED_TASKS = [
 ];
 
 const SURVIVAL_SKILLS = [
+  {
+    id: "platform_descent",
+    category: "safety",
+    icon: "minecraft:water_bucket",
+    title: {
+      en_us: "Platform Descent",
+      zh_cn: "高台下降"
+    },
+    description: {
+      en_us: "When spawned on an elevated test platform, scan below for water or safe descent targets before normal resource work.",
+      zh_cn: "出生在高空测试平台时，先扫描平台下方水坑或安全下降点，再进行普通资源任务。"
+    },
+    tasks: ["descend_from_platform", "escape_pit", "explore"],
+    preconditions: ["elevated_platform_or_long_drop", "water_or_safe_descent_visible"],
+    success: ["left_platform", "ground_or_water_reached", "normal_survival_route_unblocked"],
+    safety: ["prefer_water_landing", "do_not_collect_wood_before_descent", "record_descent_target_in_environment_memory"],
+    sourcePatterns: ["test_platform_bootstrap", "environment_first_task_gate"]
+  },
   {
     id: "early_stone_tools",
     category: "progression",
@@ -74,13 +93,13 @@ const SURVIVAL_SKILLS = [
       zh_cn: "可复用带门庇护所"
     },
     description: {
-      en_us: "Collect enough building blocks and build a closed starter shelter with roof and a defended doorway.",
-      zh_cn: "收集足够建筑方块，建造有屋顶和防御门洞的固定入门房屋。"
+      en_us: "Collect enough building blocks and build a surface 7x7x5 starter house with double doors and core utility blocks.",
+      zh_cn: "收集足够建筑方块，在地表建造 7x7x5 入门房屋，带双开门和核心功能方块。"
     },
     tasks: ["collect_building_materials", "build_shelter", "wait_out_night"],
-    preconditions: ["has_stone_tools", "starter_food_ready", "daytime_preferred"],
-    success: ["starter_shelter_nearby", "starter_shelter_defensible", "doorway_protected"],
-    safety: ["do_not_trust_distant_shelter_memory", "seal_if_door_install_fails", "hold_inside_at_night"],
+    preconditions: ["has_stone_tools", "starter_food_ready", "surface_open_sky_site", "daytime_preferred"],
+    success: ["starter_shelter_nearby", "starter_shelter_defensible", "double_door_installed", "crafting_table_furnace_chest_inside"],
+    safety: ["do_not_build_fixed_shelter_underground", "add_torches_when_available", "do_not_trust_distant_shelter_memory", "hold_inside_at_night"],
     sourcePatterns: ["patchouli_multiblock_blueprint", "ponderer_structure_demo"]
   },
   {

@@ -28,6 +28,15 @@ function createDefaultSurvivalMemory() {
     learning: {
       policyStats: {},
       avoidedPositions: []
+    },
+    exploration: {
+      lastScanAt: null,
+      lastPosition: null,
+      lastLocalScan: null,
+      lastRegionalScan: null,
+      lastDescent: null,
+      visited: [],
+      coarseCells: {}
     }
   };
 }
@@ -102,6 +111,35 @@ function mergeMemory(rawMemory) {
       updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : null
     }))
     .filter((entry) => entry.position);
+
+  const exploration = rawMemory.exploration && typeof rawMemory.exploration === "object" ? rawMemory.exploration : {};
+  memory.exploration.lastScanAt = typeof exploration.lastScanAt === "string" ? exploration.lastScanAt : null;
+  memory.exploration.lastPosition = normalizePosition(exploration.lastPosition);
+  memory.exploration.lastLocalScan = exploration.lastLocalScan && typeof exploration.lastLocalScan === "object" ? exploration.lastLocalScan : null;
+  memory.exploration.lastRegionalScan = exploration.lastRegionalScan && typeof exploration.lastRegionalScan === "object" ? exploration.lastRegionalScan : null;
+  memory.exploration.lastDescent = exploration.lastDescent && typeof exploration.lastDescent === "object" ? exploration.lastDescent : null;
+  memory.exploration.visited = Array.isArray(exploration.visited)
+    ? exploration.visited.slice(-80).map((entry) => ({
+      at: typeof entry.at === "string" ? entry.at : null,
+      dimension: typeof entry.dimension === "string" ? entry.dimension : "unknown",
+      position: normalizePosition(entry.position)
+    })).filter((entry) => entry.position)
+    : [];
+  const coarseCells = exploration.coarseCells && typeof exploration.coarseCells === "object" ? exploration.coarseCells : {};
+  for (const [key, cell] of Object.entries(coarseCells).slice(-1200)) {
+    if (!cell || typeof cell !== "object") continue;
+    const position = normalizePosition(cell.position);
+    if (!position) continue;
+    memory.exploration.coarseCells[key] = {
+      dimension: typeof cell.dimension === "string" ? cell.dimension : "unknown",
+      position,
+      topBlock: typeof cell.topBlock === "string" ? cell.topBlock : null,
+      water: Boolean(cell.water),
+      hazard: Boolean(cell.hazard),
+      safeStand: Boolean(cell.safeStand),
+      lastSeenAt: typeof cell.lastSeenAt === "string" ? cell.lastSeenAt : null
+    };
+  }
 
   return memory;
 }

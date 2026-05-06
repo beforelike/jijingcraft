@@ -17,6 +17,17 @@ const CONFIG_ENV_KEYS = [
   "LLM_TASK_QUEUE_ENABLED",
   "LLM_MAX_QUEUED_TASKS",
   "LLM_TASK_QUEUE_MAX_AGE_MS",
+  "PYTHON_BRAIN_ENABLED",
+  "PYTHON_BRAIN_SERVICE_ENABLED",
+  "PYTHON_BRAIN_URL",
+  "PYTHON_BRAIN_TIMEOUT_MS",
+  "PYTHON_BRAIN_PLANNER_INTERVAL_MS",
+  "PYTHON_BRAIN_AUTO_START",
+  "PYTHON_BRAIN_MANAGED",
+  "PYTHON_BRAIN_COMMAND",
+  "PYTHON_BRAIN_ARGS",
+  "BRAIN_HOST",
+  "BRAIN_PORT",
   "TEST_CONTROL_ENABLED",
   "TEST_INITIAL_FORCED_TASK",
   "TEST_INITIAL_FORCED_TASK_REASON",
@@ -189,4 +200,32 @@ test("night food buffer can be tuned by environment", () => withEnv({
 }, () => {
   const config = loadConfig();
   assert.equal(config.survival.nightFoodBuffer, 17);
+}));
+
+test("Python Brain service controls stay available when planner integration is off", () => withEnv({}, () => {
+  const config = loadConfig();
+  assert.equal(config.pythonBrain.enabled, false);
+  assert.equal(config.pythonBrain.serviceEnabled, true);
+}));
+
+test("Python Brain config is opt-in and exposes service controls", () => withEnv({
+  PYTHON_BRAIN_ENABLED: "true",
+  PYTHON_BRAIN_SERVICE_ENABLED: "false",
+  PYTHON_BRAIN_URL: "http://127.0.0.1:3333",
+  PYTHON_BRAIN_TIMEOUT_MS: "12000",
+  PYTHON_BRAIN_PLANNER_INTERVAL_MS: "7000",
+  PYTHON_BRAIN_AUTO_START: "true",
+  PYTHON_BRAIN_COMMAND: "py",
+  PYTHON_BRAIN_ARGS: "-m python_brain.main"
+}, () => {
+  const config = loadConfig();
+  assert.equal(config.pythonBrain.enabled, true);
+  assert.equal(config.pythonBrain.serviceEnabled, false);
+  assert.equal(config.pythonBrain.url, "http://127.0.0.1:3333");
+  assert.equal(config.pythonBrain.timeoutMs, 12000);
+  assert.equal(config.pythonBrain.planningIntervalMs, 7000);
+  assert.equal(config.pythonBrain.autoStart, true);
+  assert.equal(config.pythonBrain.managed, true);
+  assert.equal(config.pythonBrain.command, "py");
+  assert.equal(config.pythonBrain.args, "-m python_brain.main");
 }));

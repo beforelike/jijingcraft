@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 const { FOOD_ITEMS } = require("../src/survival/constants");
-const { countItems, inventoryFromBot } = require("../src/survival/inventory");
+const { countItems, firstInventoryItem, inventoryFromBot } = require("../src/survival/inventory");
 
 test("inventoryFromBot counts a held food item that is not listed in inventory slots", () => {
   const inventory = inventoryFromBot({
@@ -21,4 +21,14 @@ test("inventoryFromBot does not double count the held slot when it is already li
   });
 
   assert.equal(inventory.chicken, 1);
+});
+
+test("firstInventoryItem can return a matching held item", () => {
+  const heldItem = { name: "crafting_table", count: 1, slot: 36 };
+  const item = firstInventoryItem({
+    heldItem,
+    inventory: { items: () => [] }
+  }, "crafting_table");
+
+  assert.equal(item, heldItem);
 });

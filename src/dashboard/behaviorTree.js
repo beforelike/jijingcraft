@@ -7,11 +7,12 @@ const BEHAVIOR_TREE_GROUPS = [
     nodes: [
       { id: "escape_hazard", label: "脱离危险方块", kind: "condition", priority: 1 },
       { id: "escape_pit", label: "脱离地形陷阱", kind: "condition", priority: 2 },
-      { id: "eat_food", label: "紧急进食", kind: "action", priority: 3 },
-      { id: "recover_starvation", label: "饥饿危机稳定", kind: "action", priority: 4 },
-      { id: "evade_hostiles", label: "规避敌对生物", kind: "action", priority: 5 },
-      { id: "defend_shelter", label: "庇护所防御", kind: "action", priority: 6 },
-      { id: "defend_self", label: "最后反击", kind: "action", priority: 7 }
+      { id: "descend_from_platform", label: "高台下降", kind: "action", priority: 3 },
+      { id: "eat_food", label: "紧急进食", kind: "action", priority: 4 },
+      { id: "recover_starvation", label: "饥饿危机稳定", kind: "action", priority: 5 },
+      { id: "evade_hostiles", label: "规避敌对生物", kind: "action", priority: 6 },
+      { id: "defend_shelter", label: "庇护所防御", kind: "action", priority: 7 },
+      { id: "defend_self", label: "最后反击", kind: "action", priority: 8 }
     ]
   },
   {
@@ -83,6 +84,12 @@ const TASK_PHASE_DEFINITIONS = {
     { id: "controlled_descent", label: "逐格下挖支撑下降", kind: "action" },
     { id: "carve_stair", label: "开凿上升阶梯", kind: "action" },
     { id: "verify", label: "验证已离开陷阱", kind: "check" }
+  ],
+  descend_from_platform: [
+    { id: "scan_environment", label: "扫描平台下方水坑", kind: "sense" },
+    { id: "approach_edge", label: "移动到安全边缘", kind: "move" },
+    { id: "controlled_descent", label: "执行高台下降", kind: "action" },
+    { id: "verify", label: "验证已离开高台", kind: "check" }
   ],
   hunt_food: [
     { id: "prepare", label: "准备武器与状态", kind: "setup" },

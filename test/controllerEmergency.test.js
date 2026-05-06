@@ -101,6 +101,125 @@ test("emergency damage near a damaging plant escapes the plant instead of unknow
   assert.equal(unknownRepositioned, false);
 });
 
+test("emergency damage in water with oxygen buffer does not trigger oxygen escape", async () => {
+  const controller = Object.create(SurvivalController.prototype);
+  let oxygenEscaped = false;
+  let unknownRepositioned = false;
+  controller.bot = {
+    oxygenLevel: 12,
+    health: 18,
+    entity: { position: new Vec3(0, 60, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (blockPosition.y === 60 || blockPosition.y === 61) return { name: "water", position: blockPosition, boundingBox: "empty" };
+      return { name: "air", position: blockPosition, boundingBox: "empty" };
+    }
+  };
+  controller.config = { survival: { lowOxygenThreshold: 8, safeModeThreatRadius: 28 } };
+  controller.logger = { warn: () => {}, debug: () => {} };
+  controller.emergencyBusy = false;
+  controller.pause = () => {};
+  controller.cancelCollectTask = async () => {};
+  controller.resetMotion = () => {};
+  controller.findNearbyDamagingBlock = () => null;
+  controller.findNearbyDamagingBlockLoose = () => null;
+  controller.nearestEntity = () => null;
+  controller.isLikelyStarvationDamage = () => false;
+  controller.escapeLowOxygen = async () => {
+    oxygenEscaped = true;
+  };
+  controller.respondToUnknownDamage = async () => {
+    unknownRepositioned = true;
+  };
+
+  await controller.handleEmergencyDamage(19, 18);
+
+  assert.equal(oxygenEscaped, false);
+  assert.equal(unknownRepositioned, true);
+});
+
+test("phantom damage does not cancel active platform descent", async () => {
+  const controller = Object.create(SurvivalController.prototype);
+  let hostileResponded = false;
+  let paused = false;
+  controller.bot = {
+    health: 18,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 80, 0) },
+    blockAt: () => ({ name: "air", boundingBox: "empty" })
+  };
+  controller.config = { survival: { criticalHealth: 6, safeModeThreatRadius: 28 } };
+  controller.logger = { warn: () => {}, debug: () => {} };
+  controller.currentDecisionType = "descend_from_platform";
+  controller.emergencyBusy = false;
+  controller.pause = () => { paused = true; };
+  controller.findNearbyDamagingBlock = () => null;
+  controller.findNearbyDamagingBlockLoose = () => null;
+  controller.nearestEntity = () => ({ name: "phantom", position: new Vec3(1, 80, 0) });
+  controller.respondToHostileDamage = async () => { hostileResponded = true; };
+  controller.respondToUnknownDamage = async () => {};
+
+  await controller.handleEmergencyDamage(20, 18);
+
+  assert.equal(hostileResponded, false);
+  assert.equal(paused, false);
+  assert.equal(controller.emergencyBusy, false);
+});
+
+test("lifecycle reset clears queued work and publishes dead state", () => {
+  const controller = Object.create(SurvivalController.prototype);
+  let behaviorFailed = false;
+  let behaviorCleared = false;
+  let taskFailed = false;
+  let taskCleared = false;
+  let resetMotion = false;
+  controller.bot = {
+    health: 0,
+    food: 0,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 64, 0), isInLava: false },
+    game: { dimension: "overworld" }
+  };
+  controller.config = { survival: {}, memory: { enabled: false } };
+  controller.memory = { knownBlocks: {}, learning: { policyStats: {}, avoidedPositions: [] } };
+  controller.logger = { warn: () => {}, debug: () => {} };
+  controller.statusReporter = null;
+  controller.behaviorQueue = {
+    current: { taskType: "collect_wood" },
+    failCurrent: () => { behaviorFailed = true; return { taskType: "collect_wood" }; },
+    clear: () => { behaviorCleared = true; return { removed: 2 }; },
+    getStatus: () => ({})
+  };
+  controller.taskQueue = {
+    current: { type: "collect_wood" },
+    failCurrent: () => { taskFailed = true; },
+    clear: () => { taskCleared = true; },
+    getStatus: () => ({})
+  };
+  controller.priorityTaskQueue = { clear: () => ({ removed: 1 }), getStatus: () => ({}) };
+  controller.testTaskQueue = { getStatus: () => ({}) };
+  controller.resetMotion = () => { resetMotion = true; };
+  controller.pause = (milliseconds) => { controller.pausedUntil = Date.now() + milliseconds; };
+  controller.reportBehaviorTreeFeedback = () => {};
+  controller.publishTaskQueueStatus = () => {};
+  controller.createSnapshot = () => ({ health: controller.bot.health, food: 0, oxygen: 20, position: controller.bot.entity.position });
+  controller.busy = true;
+  controller.emergencyBusy = true;
+  controller.taskTrace = null;
+
+  const result = controller.handleLifecycleReset("bot_death", { pauseMs: 5000, interruptMs: 8000 });
+
+  assert.equal(result.lifecycleState, "dead");
+  assert.equal(controller.busy, false);
+  assert.equal(controller.emergencyBusy, false);
+  assert.equal(controller.lastPublishContext.snapshot.health, 0);
+  assert.equal(behaviorFailed, true);
+  assert.equal(behaviorCleared, true);
+  assert.equal(taskFailed, true);
+  assert.equal(taskCleared, true);
+  assert.equal(resetMotion, true);
+});
+
 test("emergency damage does not reenter an active hazard escape", async () => {
   const controller = Object.create(SurvivalController.prototype);
   const plant = { name: "sweet_berry_bush", position: new Vec3(0, 64, 0), distance: 0.4 };

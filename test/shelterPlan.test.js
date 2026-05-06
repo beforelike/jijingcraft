@@ -32,21 +32,31 @@ test("emergency shelter has a predictable doorway position for optional doors", 
   ]);
 });
 
-test("starter shelter reserves a doorway and keeps a seal plan for emergencies", () => {
+test("starter shelter is a 7x7x5 house shell with a double doorway", () => {
   const base = new Vec3(10, 70, 10);
   const starterPlan = createStarterShelterPlan(base);
   const doorwayPlan = createStarterShelterDoorwayPlan(base);
   const sealPlan = createStarterShelterDoorwaySealPlan(base);
   const starterKeys = new Set(starterPlan.map((position) => `${position.x},${position.y},${position.z}`));
 
-  assert.equal(starterKeys.has("10,70,8"), false);
-  assert.equal(starterKeys.has("10,71,8"), false);
+  assert.equal(starterPlan.length, 141);
+  assert.equal(starterKeys.has("7,70,7"), true);
+  assert.equal(starterKeys.has("13,73,13"), true);
+  assert.equal(starterKeys.has("10,74,10"), true);
+  assert.equal(starterKeys.has("10,70,7"), false);
+  assert.equal(starterKeys.has("10,71,7"), false);
+  assert.equal(starterKeys.has("11,70,7"), false);
+  assert.equal(starterKeys.has("11,71,7"), false);
   assert.deepEqual(doorwayPlan.map((position) => [position.x, position.y, position.z]), [
-    [10, 70, 8],
-    [10, 71, 8]
+    [10, 70, 7],
+    [10, 71, 7],
+    [11, 70, 7],
+    [11, 71, 7]
   ]);
   assert.deepEqual(sealPlan.map((position) => [position.x, position.y, position.z]), [
-    [10, 70, 8],
-    [10, 71, 8]
+    [10, 70, 7],
+    [10, 71, 7],
+    [11, 70, 7],
+    [11, 71, 7]
   ]);
 });

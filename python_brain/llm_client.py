@@ -1,11 +1,7 @@
-"""
-Async LLM client using httpx.
-Wraps any OpenAI-compatible /v1/chat/completions endpoint.
-"""
+"""Async OpenAI-compatible chat client used by Python Smart Brain agents."""
 
 from __future__ import annotations
 
-import json
 import time
 from typing import Any
 
@@ -14,12 +10,8 @@ import httpx
 from .config import BrainConfig
 
 
-class LLMError(Exception):
-    pass
-
-
 class LLMClient:
-    def __init__(self, cfg: BrainConfig, http: httpx.AsyncClient | None = None):
+    def __init__(self, cfg: BrainConfig, http: httpx.AsyncClient | None = None) -> None:
         self._cfg = cfg
         self._http = http or httpx.AsyncClient(timeout=cfg.llm_timeout_s)
 
@@ -27,63 +19,45 @@ class LLMClient:
         self,
         messages: list[dict[str, Any]],
         *,
-        tools: list[dict[str, Any]] | None = None,
-        temperature: float = 0.0,
+        temperature: float | None = None,
+        json_mode: bool = True,
     ) -> dict[str, Any]:
-        """
-        Single async chat completion call.
-        Returns a normalised dict:
-          {ok, content, tool_calls, finish_reason, duration_ms, error?}
-        """
-        t0 = time.monotonic()
+        started_at = time.monotonic()
         body: dict[str, Any] = {
             "model": self._cfg.llm_model,
             "messages": messages,
-            "temperature": temperature,
+            "temperature": self._cfg.response_temperature if temperature is None else temperature,
         }
-        if tools:
-            body["tools"] = tools
-            body["tool_choice"] = "auto"
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
 
         try:
-            resp = await self._http.post(
+            response = await self._http.post(
                 self._cfg.llm_chat_url,
                 headers={
                     "Authorization": f"Bearer {self._cfg.llm_api_key}",
                     "Content-Type": "application/json",
                 },
-                content=json.dumps(body),
+                json=body,
             )
-            dur_ms = (time.monotonic() - t0) * 1000
-            data = resp.json()
+            duration_ms = (time.monotonic() - started_at) * 1000
+            payload = response.json()
+            if response.status_code >= 400:
+                error = payload.get("error", {}) if isinstance(payload, dict) else {}
+                return {"ok": False, "error": error.get("message") or response.reason_phrase, "durationMs": duration_ms}
 
-            if resp.status_code != 200:
-                return {
-                    "ok": False,
-                    "error": data.get("error", {}).get("message", resp.reason_phrase),
-                    "duration_ms": dur_ms,
-                }
-
-            msg = data.get("choices", [{}])[0].get("message", {})
-            raw_calls = msg.get("tool_calls") or []
-            tool_calls = [
-                {
-                    "id": c.get("id"),
-                    "name": c.get("function", {}).get("name"),
-                    "arguments": c.get("function", {}).get("arguments", "{}"),
-                }
-                for c in raw_calls
-            ]
+            choice = (payload.get("choices") or [{}])[0]
+            message = choice.get("message") or {}
             return {
                 "ok": True,
-                "content": msg.get("content") or "",
-                "tool_calls": tool_calls,
-                "finish_reason": data.get("choices", [{}])[0].get("finish_reason"),
-                "duration_ms": dur_ms,
+                "content": message.get("content") or "",
+                "finishReason": choice.get("finish_reason"),
+                "usage": payload.get("usage") or {},
+                "durationMs": duration_ms,
             }
-        except Exception as exc:  # network errors, timeouts, etc.
-            dur_ms = (time.monotonic() - t0) * 1000
-            return {"ok": False, "error": str(exc), "duration_ms": dur_ms}
+        except Exception as exc:  # network errors, timeouts, malformed upstream payloads
+            duration_ms = (time.monotonic() - started_at) * 1000
+            return {"ok": False, "error": str(exc), "durationMs": duration_ms}
 
     async def aclose(self) -> None:
         await self._http.aclose()

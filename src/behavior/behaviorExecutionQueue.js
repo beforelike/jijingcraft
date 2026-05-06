@@ -187,6 +187,32 @@ class BehaviorExecutionQueue {
     this.lastEvent = { type: "trimmed", removed: removed.map((tree) => tree.id), at: nowIso() };
   }
 
+  discardPendingBySource(source, reason = "superseded", details = {}) {
+    if (!source) return { type: "discarded_pending", source, reason, removed: 0, at: nowIso() };
+    const removed = [];
+    this.queue = this.queue.filter((tree) => {
+      if (tree.source !== source) return true;
+      tree.status = "skipped";
+      tree.completedAt = nowIso();
+      tree.lastOutcome = "skipped";
+      tree.lastReason = reason;
+      removed.push(tree);
+      this.recordFeedback(tree, "skipped", reason, details);
+      return false;
+    });
+    if (!removed.length) return { type: "discarded_pending", source, reason, removed: 0, at: nowIso() };
+    this.completed = [...removed.reverse(), ...this.completed].slice(0, this.maxTrees);
+    this.lastEvent = {
+      type: "discarded_pending",
+      source,
+      reason,
+      removed: removed.length,
+      tasks: removed.map((tree) => tree.taskType),
+      at: nowIso()
+    };
+    return { ...this.lastEvent };
+  }
+
   pruneExpired(now = Date.now()) {
     const before = this.queue.length;
     this.queue = this.queue.filter((tree) => {

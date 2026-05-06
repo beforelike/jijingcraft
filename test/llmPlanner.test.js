@@ -36,7 +36,32 @@ function plannerInput() {
         damagingSamples: 0,
         nearbyWater: [{ name: "water", position: new Vec3(18, 63, 4) }],
         matureBerryBushes: [{ name: "sweet_berry_bush", position: new Vec3(-6, 64, 9) }],
-        nearbyLogs: [{ name: "spruce_log", position: new Vec3(12, 64, -3) }]
+        nearbyLogs: [{ name: "spruce_log", position: new Vec3(12, 64, -3) }],
+        exactLocal: {
+          radius: 5,
+          width: 11,
+          center: new Vec3(1, 64, 2),
+          safeStandCount: 80,
+          waterCount: 2,
+          hazardCount: 0,
+          groundCounts: [{ name: "snow_block", count: 80 }],
+          cells: [{ dx: 0, dz: 0, position: new Vec3(1, 64, 2), ground: "snow_block", feet: "air", safeStand: true, water: false, hazard: false }]
+        },
+        regional: {
+          radius: 100,
+          diameter: 200,
+          step: 10,
+          sampleCount: 100,
+          waterCells: 12,
+          hazardCells: 0,
+          safeCells: 80,
+          topBlocks: [{ name: "snow_block", count: 60 }, { name: "water", count: 12 }]
+        },
+        descent: {
+          needsDescent: true,
+          summary: "elevated platform: water landing 20 blocks below",
+          bestTarget: { waterPosition: new Vec3(4, 60, 4), entryPosition: new Vec3(4, 61, 4), horizontalDistance: 5, drop: 20, route: "water_landing" }
+        }
       },
       inventory: { spruce_log: 4, cobblestone: 8 },
       entities: [{ name: "cow", distance: 12, position: new Vec3(8, 64, 2) }]
@@ -49,7 +74,11 @@ function plannerInput() {
       materialCount: 12,
       milestones: [{ id: "crafting_ready", achieved: true }, { id: "starter_food", achieved: false }]
     },
-    memory: { knownBlocks: { crafting_table: [{ position: { x: 0, y: 64, z: 0 } }] }, learning: { policyStats: {} } },
+    memory: {
+      knownBlocks: { crafting_table: [{ position: { x: 0, y: 64, z: 0 } }] },
+      learning: { policyStats: {} },
+      exploration: { visited: [{ position: { x: 1, y: 64, z: 2 }, dimension: "overworld" }], coarseCells: { "overworld:0:0": { position: { x: 0, y: 64, z: 0 }, topBlock: "snow_block" } } }
+    },
     decision: { type: "hunt_food", reason: "food buffer is low" },
     skillEnvelope: { plan: { skillId: "starter_food_buffer", title: "启动食物储备", tasks: ["hunt_food", "eat_food"], nextTask: "hunt_food", safety: [] } },
     dimension: "overworld",
@@ -76,6 +105,10 @@ test("buildPlannerContext compresses runtime state for dry-run planning", () => 
   assert.equal(context.world.terrain.waterSamples, 7);
   assert.deepEqual(context.world.terrain.nearbyWater[0].position, { x: 18, y: 63, z: 4 });
   assert.deepEqual(context.world.terrain.matureBerryBushes[0].position, { x: -6, y: 64, z: 9 });
+  assert.equal(context.world.terrain.exactLocal.width, 11);
+  assert.equal(context.world.terrain.regional.diameter, 200);
+  assert.equal(context.world.terrain.descent.needsDescent, true);
+  assert.equal(context.world.terrain.descent.bestTarget.drop, 20);
   assert.equal(context.foodStrategy.recommendedSource, "land_animal");
   assert.equal(context.foodStrategy.decisionBasis, "nearby_land_food_visible");
   assert.equal(context.foodStrategy.environmentRisk.coldOrIcyTerrain, true);
@@ -86,7 +119,10 @@ test("buildPlannerContext compresses runtime state for dry-run planning", () => 
   assert.equal(context.inventory[0].name, "cobblestone");
   assert.equal(context.memory.knownBlocks.crafting_table.count, 1);
   assert.deepEqual(context.memory.knownBlocks.crafting_table.nearest[0].position, { x: 0, y: 64, z: 0 });
+  assert.equal(context.memory.exploration.coarseCellCount, 1);
   assert.ok(context.allowedTasks.includes("collect_wood"));
+  assert.ok(context.allowedTasks.includes("descend_from_platform"));
+  assert.ok(context.safetyRules.some((rule) => /descend_from_platform/.test(rule)));
   assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "collect_wood" && treeClass.treeClass === "CollectWoodTree"));
   assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "hunt_food" && treeClass.constructorSchema.allowAquaticHunt));
   assert.ok(context.availableSkills.some((skill) => skill.id === "starter_food_buffer"));

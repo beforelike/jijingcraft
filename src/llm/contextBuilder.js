@@ -1,4 +1,5 @@
 const { listAllowedTasks, listSurvivalSkills } = require("../knowledge/survivalSkills");
+const { compactMinecraftSurvivalGuide } = require("../knowledge/minecraftSurvivalGuide");
 const { taskFunctionName, taskLevel, taskParameterSchema, taskPriority, taskTreeClassName } = require("../behavior/executableBehaviorTree");
 
 function round(value, digits = 1) {
@@ -53,7 +54,47 @@ function terrainSummary(terrain = null) {
     damagingSamples: Number(terrain.damagingSamples) || 0,
     nearbyWater: compactResources(terrain.nearbyWater),
     matureBerryBushes: compactResources(terrain.matureBerryBushes),
-    nearbyLogs: compactResources(terrain.nearbyLogs)
+    nearbyLogs: compactResources(terrain.nearbyLogs),
+    exactLocal: terrain.exactLocal ? {
+      radius: Number(terrain.exactLocal.radius) || 0,
+      width: Number(terrain.exactLocal.width) || 0,
+      center: positionSummary(terrain.exactLocal.center),
+      safeStandCount: Number(terrain.exactLocal.safeStandCount) || 0,
+      waterCount: Number(terrain.exactLocal.waterCount) || 0,
+      hazardCount: Number(terrain.exactLocal.hazardCount) || 0,
+      groundCounts: Array.isArray(terrain.exactLocal.groundCounts) ? terrain.exactLocal.groundCounts.slice(0, 8) : [],
+      cells: Array.isArray(terrain.exactLocal.cells) ? terrain.exactLocal.cells.slice(0, 121).map((cell) => ({
+        dx: Number(cell.dx) || 0,
+        dz: Number(cell.dz) || 0,
+        position: positionSummary(cell.position),
+        ground: cell.ground ?? null,
+        feet: cell.feet ?? null,
+        safeStand: Boolean(cell.safeStand),
+        water: Boolean(cell.water),
+        hazard: Boolean(cell.hazard)
+      })) : []
+    } : null,
+    regional: terrain.regional ? {
+      radius: Number(terrain.regional.radius) || 0,
+      diameter: Number(terrain.regional.diameter) || 0,
+      step: Number(terrain.regional.step) || 0,
+      sampleCount: Number(terrain.regional.sampleCount) || 0,
+      waterCells: Number(terrain.regional.waterCells) || 0,
+      hazardCells: Number(terrain.regional.hazardCells) || 0,
+      safeCells: Number(terrain.regional.safeCells) || 0,
+      topBlocks: Array.isArray(terrain.regional.topBlocks) ? terrain.regional.topBlocks.slice(0, 12) : []
+    } : null,
+    descent: terrain.descent ? {
+      needsDescent: Boolean(terrain.descent.needsDescent),
+      summary: terrain.descent.summary ?? null,
+      bestTarget: terrain.descent.bestTarget ? {
+        waterPosition: positionSummary(terrain.descent.bestTarget.waterPosition),
+        entryPosition: positionSummary(terrain.descent.bestTarget.entryPosition),
+        horizontalDistance: round(terrain.descent.bestTarget.horizontalDistance),
+        drop: Number(terrain.descent.bestTarget.drop) || 0,
+        route: terrain.descent.bestTarget.route ?? null
+      } : null
+    } : null
   };
 }
 
@@ -227,8 +268,11 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       "Do not generate Mineflayer JavaScript or direct API calls.",
       "Output agentDirectives and taskRequests that task_agent can instantiate as behavior trees.",
       "When taskFeedback reports a blocked task, propose a different safe task that can gather information, change location, or prepare prerequisites instead of repeating the blocked task.",
-      "For early food, do an environment-aware choice: request explore if food sources are unknown; prefer nearby land food when safe; prefer mature berry bushes over aquatic fish only when local terrain/water/oxygen risk makes fish unsafe or berries are clearly the safer visible source."
+      "For early food, do an environment-aware choice: request explore if food sources are unknown; prefer nearby land food when safe; prefer mature berry bushes over aquatic fish only when local terrain/water/oxygen risk makes fish unsafe or berries are clearly the safer visible source.",
+      "Use minecraftWiki.environmentRules and taskNotes: water with oxygen remaining is not a hazard, water columns are not escape pits, and dry-land tasks should first surface or find shore.",
+      "If terrain.descent.needsDescent is true, request descend_from_platform before collect_wood or other progression tasks."
     ],
+    minecraftWiki: compactMinecraftSurvivalGuide(),
     bot: {
       health: snapshot?.health ?? null,
       food: snapshot?.food ?? null,
@@ -246,7 +290,8 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       navigationTrap: Boolean(snapshot?.navigationTrap),
       navigationAnalysis: navigationAnalysisSummary(snapshot?.navigationAnalysis),
       terrain: terrainSummary(snapshot?.terrain),
-      isInLava: Boolean(snapshot?.isInLava)
+      isInLava: Boolean(snapshot?.isInLava),
+      isBodyInWater: Boolean(snapshot?.isBodyInWater)
     },
     currentRuleDecision: decision ? {
       type: decision.type,
@@ -274,7 +319,16 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
     nearbyEntities: nearbyEntitySummary(snapshot?.entities),
     memory: {
       knownBlocks: knownBlockSummary(memory?.knownBlocks ?? {}),
-      recentLearning: learningSummary(memory)
+      recentLearning: learningSummary(memory),
+      exploration: memory?.exploration ? {
+        lastScanAt: memory.exploration.lastScanAt ?? null,
+        lastPosition: positionSummary(memory.exploration.lastPosition),
+        lastLocalScan: memory.exploration.lastLocalScan ?? null,
+        lastRegionalScan: memory.exploration.lastRegionalScan ?? null,
+        lastDescent: memory.exploration.lastDescent ?? null,
+        visitedCount: Array.isArray(memory.exploration.visited) ? memory.exploration.visited.length : 0,
+        coarseCellCount: memory.exploration.coarseCells && typeof memory.exploration.coarseCells === "object" ? Object.keys(memory.exploration.coarseCells).length : 0
+      } : null
     },
     controller: {
       busy: Boolean(controller?.busy),

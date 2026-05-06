@@ -23,6 +23,36 @@
       </div>
     </header>
 
+    <section class="panel service-panel" aria-label="服务管理">
+      <div class="section-heading">
+        <span>服务管理</span>
+        <small id="serviceSummary">等待服务状态</small>
+      </div>
+      <div class="service-grid">
+        <article class="service-card">
+          <span class="label">Dashboard</span>
+          <strong id="dashboardServiceState">--</strong>
+          <small id="dashboardServiceUrl">--</small>
+        </article>
+        <article class="service-card">
+          <span class="label">Minecraft BOT</span>
+          <strong id="botServiceState">--</strong>
+          <small id="botServiceDetail">--</small>
+        </article>
+        <article class="service-card python-brain-card">
+          <span class="label">Python Smart Brain</span>
+          <strong id="pythonBrainServiceState">--</strong>
+          <small id="pythonBrainServiceDetail">--</small>
+          <div class="service-actions" aria-label="Python Smart Brain 控制">
+            <button type="button" data-python-brain-action="start">启动</button>
+            <button type="button" data-python-brain-action="restart">重启</button>
+            <button type="button" data-python-brain-action="stop">停止</button>
+          </div>
+        </article>
+      </div>
+      <div id="serviceLog" class="service-log"></div>
+    </section>
+
     <section class="grid metrics" aria-label="BOT 状态">
       <article class="panel metric-panel">
         <span class="label">生命</span>
@@ -63,8 +93,29 @@
           <small id="botViewTargetDistance">--</small>
         </div>
         <div class="bot-view-blocks-wrap">
-          <span class="label">前方方块采样（1-8格）</span>
+          <span class="label">前方方块采样（1-16格）</span>
           <div id="botViewBlocks" class="list-table"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel terrain-panel">
+      <div class="section-heading">
+        <span>环境扫描</span>
+        <small id="terrainSummary">等待扫描</small>
+      </div>
+      <div class="terrain-grid">
+        <div>
+          <span class="label">10x10 精确扫描</span>
+          <div id="localTerrainMap" class="local-terrain-map"></div>
+        </div>
+        <div>
+          <span class="label">200x200 粗略地图</span>
+          <div id="regionalTerrainSummary" class="list-table"></div>
+        </div>
+        <div>
+          <span class="label">下降目标</span>
+          <div id="descentTargetSummary" class="list-table"></div>
         </div>
       </div>
     </section>

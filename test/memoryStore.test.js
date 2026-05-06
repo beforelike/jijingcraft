@@ -63,3 +63,31 @@ test("records failed action positions for adaptive avoidance", () => {
   }), true);
   assert.equal(memory.learning.policyStats["forage_food:sweet_berry_bush"].failures, 1);
 });
+
+test("stores and reloads exploration coarse map memory", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "mc-bot-exploration-memory-"));
+  const memoryPath = path.join(directory, "survival-memory.json");
+  const memory = createDefaultSurvivalMemory();
+  memory.exploration.lastScanAt = "2026-05-06T00:00:00.000Z";
+  memory.exploration.lastPosition = { x: 1, y: 80, z: 2 };
+  memory.exploration.lastRegionalScan = { radius: 100, step: 10, sampleCount: 25 };
+  memory.exploration.lastDescent = { waterPosition: { x: 4, y: 60, z: 4 }, entryPosition: { x: 4, y: 61, z: 4 }, drop: 20 };
+  memory.exploration.visited.push({ at: memory.exploration.lastScanAt, dimension: "overworld", position: { x: 1, y: 80, z: 2 } });
+  memory.exploration.coarseCells["overworld:0:0"] = {
+    dimension: "overworld",
+    position: { x: 0, y: 64, z: 0 },
+    topBlock: "stone",
+    water: false,
+    hazard: false,
+    safeStand: true,
+    lastSeenAt: memory.exploration.lastScanAt
+  };
+
+  assert.equal(saveSurvivalMemory(memoryPath, memory, { warn() {} }), true);
+  const loaded = loadSurvivalMemory(memoryPath, { warn() {} });
+
+  assert.equal(loaded.exploration.visited.length, 1);
+  assert.equal(Object.keys(loaded.exploration.coarseCells).length, 1);
+  assert.equal(loaded.exploration.coarseCells["overworld:0:0"].topBlock, "stone");
+  assert.equal(loaded.exploration.lastDescent.drop, 20);
+});

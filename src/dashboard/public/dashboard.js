@@ -11,12 +11,25 @@ const elements = {
   setDayButton: document.getElementById("setDayButton"),
   setNightButton: document.getElementById("setNightButton"),
   timeControlStatus: document.getElementById("timeControlStatus"),
+  serviceSummary: document.getElementById("serviceSummary"),
+  dashboardServiceState: document.getElementById("dashboardServiceState"),
+  dashboardServiceUrl: document.getElementById("dashboardServiceUrl"),
+  botServiceState: document.getElementById("botServiceState"),
+  botServiceDetail: document.getElementById("botServiceDetail"),
+  pythonBrainServiceState: document.getElementById("pythonBrainServiceState"),
+  pythonBrainServiceDetail: document.getElementById("pythonBrainServiceDetail"),
+  serviceLog: document.getElementById("serviceLog"),
+  pythonBrainButtons: [...document.querySelectorAll("[data-python-brain-action]")],
   botViewHeading: document.getElementById("botViewHeading"),
   botViewAngles: document.getElementById("botViewAngles"),
   botViewDirection: document.getElementById("botViewDirection"),
   botViewTarget: document.getElementById("botViewTarget"),
   botViewTargetDistance: document.getElementById("botViewTargetDistance"),
   botViewBlocks: document.getElementById("botViewBlocks"),
+  terrainSummary: document.getElementById("terrainSummary"),
+  localTerrainMap: document.getElementById("localTerrainMap"),
+  regionalTerrainSummary: document.getElementById("regionalTerrainSummary"),
+  descentTargetSummary: document.getElementById("descentTargetSummary"),
   diagOverall: document.getElementById("diagOverall"),
   diagSummary: document.getElementById("diagSummary"),
   diagSignalCount: document.getElementById("diagSignalCount"),
@@ -72,14 +85,15 @@ const elements = {
 const NORMAL_REFRESH_MS = 1000;
 const DETAIL_REVIEW_REFRESH_MS = 5000;
 const openTaskHistoryItems = new Set();
+let lastServices = null;
 
 const AGENT_FRAMEWORK = [
   {
     id: "safety_agent",
     title: "安全 agent",
-    receives: ["危险方块/岩浆/水下氧气", "地形陷阱与掉落风险", "低血量/饥饿/伤害事件"],
-    outputs: ["EscapeHazardTree", "EscapePitTree", "EatFoodTree", "RecoverStarvationTree"],
-    tasks: ["escape_hazard", "escape_pit", "eat_food", "recover_starvation"]
+    receives: ["危险方块/岩浆/水下氧气", "地形陷阱/高台/掉落风险", "低血量/饥饿/伤害事件"],
+    outputs: ["EscapeHazardTree", "EscapePitTree", "DescendFromPlatformTree", "EatFoodTree", "RecoverStarvationTree"],
+    tasks: ["escape_hazard", "escape_pit", "descend_from_platform", "eat_food", "recover_starvation"]
   },
   {
     id: "combat_agent",
@@ -703,6 +717,56 @@ function renderConnection(status) {
   elements.connectionBadge.className = `connection ${connection.state ?? "starting"}`;
 }
 
+function serviceClass(status) {
+  const value = String(status ?? "unknown").toLowerCase();
+  if (["running", "connected", "reachable", "process_running", "ok", "started", "already_reachable"].includes(value)) return "ok";
+  if (["disabled", "unconfigured", "stopped", "disconnected", "kicked", "dead"].includes(value)) return "bad";
+  return "warn";
+}
+
+function setServiceState(element, value) {
+  if (!element) return;
+  element.textContent = value ?? "--";
+  element.className = `service-state ${serviceClass(value)}`;
+}
+
+function renderServices(services = lastServices) {
+  if (!services || !elements.serviceSummary) return;
+  lastServices = services;
+  const dashboard = services.dashboard ?? {};
+  const bot = services.minecraftBot ?? {};
+  const brain = services.pythonBrain ?? {};
+  const brainHealth = brain.health ?? {};
+  const brainStatus = brainHealth.ok ? (brain.status === "process_running" ? "process_running" : "reachable") : brain.status;
+
+  setServiceState(elements.dashboardServiceState, dashboard.status ?? "running");
+  setText(elements.dashboardServiceUrl, dashboard.url ?? location.origin);
+  setServiceState(elements.botServiceState, bot.status ?? "unknown");
+  setText(elements.botServiceDetail, [bot.username, bot.host && bot.port ? `${bot.host}:${bot.port}` : null, bot.message].filter(Boolean).join(" · ") || "--");
+  setServiceState(elements.pythonBrainServiceState, brainStatus ?? "unknown");
+  setText(elements.pythonBrainServiceDetail, [brain.enabled ? brain.url : "service disabled", brain.plannerEnabled ? "planner on" : "planner off", brain.pid ? `pid ${brain.pid}` : null, brainHealth.error].filter(Boolean).join(" · ") || "--");
+
+  const healthyCount = [dashboard.status === "running", ["connected", "connecting"].includes(bot.status), Boolean(brainHealth.ok)].filter(Boolean).length;
+  setText(elements.serviceSummary, `${healthyCount}/3 在线 · Python Brain ${brainHealth.ok ? "可达" : "不可达"}`);
+  elements.serviceLog?.replaceChildren();
+  for (const log of brain.logs ?? []) {
+    const row = document.createElement("div");
+    row.className = `service-log-row ${log.level ?? "info"}`;
+    const level = document.createElement("strong");
+    level.textContent = log.level ?? "info";
+    const message = document.createElement("span");
+    message.textContent = `${formatTime(log.at)} · ${log.message ?? ""}`;
+    row.append(level, message);
+    elements.serviceLog?.append(row);
+  }
+  if (!elements.serviceLog?.children.length) {
+    const row = document.createElement("div");
+    row.className = "service-log-row muted";
+    row.textContent = "暂无 Python Brain 进程日志";
+    elements.serviceLog?.append(row);
+  }
+}
+
 function renderMetrics(status) {
   const bot = status.bot ?? {};
   const world = status.world ?? {};
@@ -785,6 +849,88 @@ function renderBotPerspective(status) {
     elements.botViewBlocks.append(row);
   }
   if (!elements.botViewBlocks.children.length) clearAndEmpty(elements.botViewBlocks, "前方无可采样方块");
+}
+
+function terrainCellClass(cell = {}) {
+  if (cell.hazard) return "terrain-cell hazard";
+  if (cell.water) return "terrain-cell water";
+  if (cell.safeStand) return "terrain-cell safe";
+  if (cell.feet && cell.feet !== "air") return "terrain-cell blocked";
+  return "terrain-cell neutral";
+}
+
+function terrainCellText(cell = {}) {
+  if (cell.dx === 0 && cell.dz === 0) return "B";
+  if (cell.water) return "W";
+  if (cell.hazard) return "!";
+  if (cell.safeStand) return ".";
+  return "";
+}
+
+function renderTerrain(status) {
+  const terrain = status.world?.terrain ?? null;
+  if (!terrain) {
+    setText(elements.terrainSummary, "暂无扫描");
+    clearAndEmpty(elements.localTerrainMap, "暂无 10x10 数据");
+    clearAndEmpty(elements.regionalTerrainSummary, "暂无 200x200 数据");
+    clearAndEmpty(elements.descentTargetSummary, "暂无下降目标");
+    return;
+  }
+
+  const local = terrain.exactLocal;
+  const regional = terrain.regional;
+  const descent = terrain.descent;
+  setText(
+    elements.terrainSummary,
+    `local ${local?.width ?? 0}x${local?.width ?? 0} · regional ${regional?.diameter ?? 0}x${regional?.diameter ?? 0} · water ${regional?.waterCells ?? 0}`
+  );
+
+  elements.localTerrainMap.replaceChildren();
+  if (local?.cells?.length) {
+    elements.localTerrainMap.style.setProperty("--terrain-width", String(local.width || 11));
+    const sortedCells = [...local.cells].sort((left, right) => left.dz - right.dz || left.dx - right.dx);
+    for (const cell of sortedCells) {
+      const item = document.createElement("span");
+      item.className = terrainCellClass(cell);
+      item.textContent = terrainCellText(cell);
+      item.title = `${cell.position?.text ?? `${cell.dx},${cell.dz}`} · ground=${cell.ground ?? "--"} feet=${cell.feet ?? "--"}`;
+      elements.localTerrainMap.append(item);
+    }
+  } else {
+    clearAndEmpty(elements.localTerrainMap, "暂无 10x10 数据");
+  }
+
+  elements.regionalTerrainSummary.replaceChildren();
+  const regionalRows = [
+    [`采样`, `${regional?.sampleCount ?? 0} cells · step ${regional?.step ?? "--"}`],
+    [`安全`, `${regional?.safeCells ?? 0} safe · ${regional?.waterCells ?? 0} water · ${regional?.hazardCells ?? 0} hazard`],
+    [`主要方块`, (regional?.topBlocks ?? []).slice(0, 6).map((entry) => `${entry.name}:${entry.count}`).join(" / ") || "--"],
+    [`探索记忆`, `${status.memory?.exploration?.coarseCellCount ?? 0} coarse cells · visited ${status.memory?.exploration?.visitedCount ?? 0}`]
+  ];
+  for (const [label, value] of regionalRows) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    row.innerHTML = `<strong></strong><span></span>`;
+    row.querySelector("strong").textContent = label;
+    row.querySelector("span").textContent = value;
+    elements.regionalTerrainSummary.append(row);
+  }
+
+  elements.descentTargetSummary.replaceChildren();
+  const target = descent?.bestTarget;
+  const descentRows = target ? [
+    [descent.needsDescent ? "需要下降" : "可选目标", descent.summary ?? "water landing visible"],
+    ["水面", target.waterPosition?.text ?? "--"],
+    ["入口", `${target.entryPosition?.text ?? "--"} · drop ${target.drop ?? "--"}`]
+  ] : [["状态", "暂无水坑下降目标"]];
+  for (const [label, value] of descentRows) {
+    const row = document.createElement("div");
+    row.className = "list-row";
+    row.innerHTML = `<strong></strong><span></span>`;
+    row.querySelector("strong").textContent = label;
+    row.querySelector("span").textContent = value;
+    elements.descentTargetSummary.append(row);
+  }
 }
 
 function formatAge(milliseconds) {
@@ -1197,9 +1343,11 @@ function renderEvents(status) {
 }
 
 function render(status) {
+  renderServices(lastServices);
   renderConnection(status);
   renderMetrics(status);
   renderBotPerspective(status);
+  renderTerrain(status);
   renderDiagnostics(status);
   renderDecision(status);
   renderProgress(status);
@@ -1217,6 +1365,32 @@ function render(status) {
 function setTimeControlBusy(isBusy) {
   if (elements.setDayButton) elements.setDayButton.disabled = isBusy;
   if (elements.setNightButton) elements.setNightButton.disabled = isBusy;
+}
+
+function setServiceControlBusy(isBusy) {
+  for (const button of elements.pythonBrainButtons ?? []) button.disabled = isBusy;
+}
+
+async function controlPythonBrain(action) {
+  setServiceControlBusy(true);
+  if (elements.serviceSummary) elements.serviceSummary.textContent = `Python Brain ${action}...`;
+  try {
+    const response = await fetch("/api/services/python-brain", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) {
+      if (elements.serviceSummary) elements.serviceSummary.textContent = `Python Brain 操作失败: ${payload.error || `HTTP ${response.status}`}`;
+      return;
+    }
+    await refreshServices();
+  } catch (error) {
+    if (elements.serviceSummary) elements.serviceSummary.textContent = `Python Brain 操作失败: ${error.message}`;
+  } finally {
+    setServiceControlBusy(false);
+  }
 }
 
 async function switchWorldTime(mode) {
@@ -1246,7 +1420,7 @@ async function switchWorldTime(mode) {
 
 async function refresh() {
   try {
-    const response = await fetch("/api/status", { cache: "no-store" });
+    const [response] = await Promise.all([fetch("/api/status", { cache: "no-store" }), refreshServices()]);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     render(await response.json());
   } catch (error) {
@@ -1255,11 +1429,27 @@ async function refresh() {
   }
 }
 
+async function refreshServices() {
+  try {
+    const response = await fetch("/api/services", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const services = await response.json();
+    renderServices(services);
+    return services;
+  } catch (error) {
+    if (elements.serviceSummary) elements.serviceSummary.textContent = `服务状态离线: ${error.message}`;
+    return null;
+  }
+}
+
 if (elements.setDayButton) {
   elements.setDayButton.addEventListener("click", () => switchWorldTime("day"));
 }
 if (elements.setNightButton) {
   elements.setNightButton.addEventListener("click", () => switchWorldTime("night"));
+}
+for (const button of elements.pythonBrainButtons ?? []) {
+  button.addEventListener("click", () => controlPythonBrain(button.dataset.pythonBrainAction));
 }
 
 refresh();
