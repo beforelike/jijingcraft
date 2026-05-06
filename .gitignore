@@ -28,6 +28,9 @@ Ponderer-1.20.1/
 TouhouLittleMaid-1.20/
 Voyager-main/
 
+# Local-only docs
+README.dev.md
+
 # AI tool local config (not project code)
 .claude/
 CLAUDE.md
