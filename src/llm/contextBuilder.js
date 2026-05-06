@@ -1,5 +1,6 @@
 const { listAllowedTasks, listSurvivalSkills } = require("../knowledge/survivalSkills");
 const { compactMinecraftSurvivalGuide } = require("../knowledge/minecraftSurvivalGuide");
+const { compactResearchMissionCatalog } = require("../knowledge/researchMissionCatalog");
 const { taskFunctionName, taskLevel, taskParameterSchema, taskPriority, taskTreeClassName } = require("../behavior/executableBehaviorTree");
 
 function round(value, digits = 1) {
@@ -270,9 +271,11 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       "When taskFeedback reports a blocked task, propose a different safe task that can gather information, change location, or prepare prerequisites instead of repeating the blocked task.",
       "For early food, do an environment-aware choice: request explore if food sources are unknown; prefer nearby land food when safe; prefer mature berry bushes over aquatic fish only when local terrain/water/oxygen risk makes fish unsafe or berries are clearly the safer visible source.",
       "Use minecraftWiki.environmentRules and taskNotes: water with oxygen remaining is not a hazard, water columns are not escape pits, and dry-land tasks should first surface or find shore.",
-      "If terrain.descent.needsDescent is true, request descend_from_platform before collect_wood or other progression tasks."
+      "If terrain.descent.needsDescent is true, request descend_from_platform before collect_wood or other progression tasks.",
+      "Use researchMissions only as evaluation references for task requests and success criteria; never assume a mission can bypass live safety rules."
     ],
     minecraftWiki: compactMinecraftSurvivalGuide(),
+    researchMissions: compactResearchMissionCatalog(),
     bot: {
       health: snapshot?.health ?? null,
       food: snapshot?.food ?? null,

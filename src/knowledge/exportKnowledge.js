@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { listSurvivalSkills, formatSkillSummaryXml } = require("./survivalSkills");
+const { listResearchMissions } = require("./researchMissionCatalog");
 const { createDefaultToolRegistry } = require("./toolRegistry");
 
 const DEFAULT_OUTPUT_ROOT = path.resolve(__dirname, "..", "..", "data", "knowledge");
@@ -126,6 +127,7 @@ function buildPondererScene(skill) {
 
 function exportKnowledge(outputRoot = DEFAULT_OUTPUT_ROOT) {
   const skills = listSurvivalSkills();
+  const researchMissions = listResearchMissions();
   const tools = createDefaultToolRegistry().listTools();
   const files = [];
 
@@ -136,10 +138,16 @@ function exportKnowledge(outputRoot = DEFAULT_OUTPUT_ROOT) {
   };
 
   write("survival-skills.json", {
-    generatedFrom: ["TouhouLittleMaid skill registry", "Patchouli book format", "Ponderer scene DSL", "Voyager skill loop"],
+    generatedFrom: ["TouhouLittleMaid skill registry", "Patchouli book format", "Ponderer scene DSL", "Voyager skill loop", "Malmo mission pattern", "Minecraft_AI query feedback"],
     skillSummaryXml: formatSkillSummaryXml(skills),
     tools,
-    skills
+    skills,
+    researchMissions
+  });
+
+  write("research-missions.json", {
+    generatedFrom: ["Project Malmo mission observations/rewards/quits", "Minecraft_AI action feedback loop", "current Mineflayer test pipeline"],
+    missions: researchMissions
   });
 
   write(path.join("patchouli", "bot_survival_guide", "book.json"), buildPatchouliBook());

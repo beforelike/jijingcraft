@@ -1,6 +1,7 @@
 const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
+const { getResearchMission, listResearchMissions, missionToTestTask } = require("../knowledge/researchMissionCatalog");
 
 const STATIC_ROOT = path.join(__dirname, "public");
 const MIME_TYPES = {
@@ -83,6 +84,23 @@ function createRequestHandler(statusHub, control = {}) {
       } catch (error) {
         return sendJson(response, 400, { ok: false, error: error.message });
       }
+    }
+
+    if (requestUrl.pathname === "/api/research/missions") {
+      if (request.method !== "GET") {
+        return sendJson(response, 405, { ok: false, error: "method_not_allowed" });
+      }
+      return sendJson(response, 200, { ok: true, missions: listResearchMissions() });
+    }
+
+    if (requestUrl.pathname.startsWith("/api/research/missions/")) {
+      if (request.method !== "GET") {
+        return sendJson(response, 405, { ok: false, error: "method_not_allowed" });
+      }
+      const missionId = decodeURIComponent(requestUrl.pathname.slice("/api/research/missions/".length));
+      const mission = getResearchMission(missionId);
+      if (!mission) return sendJson(response, 404, { ok: false, error: "research_mission_not_found" });
+      return sendJson(response, 200, { ok: true, mission });
     }
 
     if (requestUrl.pathname === "/api/control/time") {
@@ -205,6 +223,34 @@ function createRequestHandler(statusHub, control = {}) {
           metadata: payload.metadata
         });
         return sendJson(response, 200, { ok: true, task, testTasks: controller.getTestTaskStatus() });
+      } catch (error) {
+        return sendJson(response, 400, { ok: false, error: error.message });
+      }
+    }
+
+    if (requestUrl.pathname === "/api/test/mission") {
+      if (!control.testControlEnabled) {
+        return sendJson(response, 404, { ok: false, error: "test_control_disabled" });
+      }
+      if (request.method !== "POST") {
+        return sendJson(response, 405, { ok: false, error: "method_not_allowed" });
+      }
+
+      const controller = control.getController?.();
+      if (!controller) return sendJson(response, 409, { ok: false, error: "controller_not_ready" });
+
+      try {
+        const body = await readRequestBody(request);
+        const payload = body ? JSON.parse(body) : {};
+        const missionId = String(payload.missionId ?? payload.id ?? "").trim();
+        const missionTask = missionToTestTask(missionId, payload);
+        const task = controller.insertTestTask(missionTask.taskType, missionTask);
+        return sendJson(response, 200, {
+          ok: true,
+          mission: getResearchMission(missionId),
+          task,
+          testTasks: controller.getTestTaskStatus()
+        });
       } catch (error) {
         return sendJson(response, 400, { ok: false, error: error.message });
       }

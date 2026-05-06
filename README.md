@@ -13,6 +13,7 @@
 - **行为树执行队列**：每个任务会被拆成准备、感知、移动、执行、验证等节点，队列保存 pending/current/completed/feedback 状态。
 - **阻塞自恢复**：过期 LLM advisory tree 会以 `stale_<task>_before_<rule>` 跳过；死亡、重生、无效坐标和 stale trace 会释放 current queued work。
 - **Dashboard 可观测性**：网页面板展示 BOT 状态、当前任务、行为树、阶段追踪、LLM 状态、队列、记忆、诊断、Agent payload 图谱，以及本地 11x11 精确扫描和 200x200 粗略地形扫描。
+- **研究任务目录**：吸收 Malmo 的 mission/observation/reward/quit 抽象，并结合 Minecraft_AI 的 action feedback 思路，提供项目内可查询、可通过测试管线注入的轻量评测任务。
 - **回归测试完整**：使用 `node:test` 覆盖决策优先级、行为树、任务队列、Dashboard、LLM 工具循环和关键生存动作。
 
 ## 架构
@@ -39,6 +40,7 @@ Minecraft Server
 - [src/behavior/behaviorExecutionQueue.js](src/behavior/behaviorExecutionQueue.js)：可执行行为树队列。
 - [src/agents/agentOrchestrator.js](src/agents/agentOrchestrator.js)：`general_agent` 与安全/战斗/生存/工程子 agent 的本地编排。
 - [src/knowledge/minecraftSurvivalGuide.js](src/knowledge/minecraftSurvivalGuide.js)：提供给 Smart Brain 的 MC 生存规则摘要，覆盖水、氧气、早期进度和基础任务常识。
+- [src/knowledge/researchMissionCatalog.js](src/knowledge/researchMissionCatalog.js)：项目自己的轻量 mission catalog，用 observation/reward/quit 条件描述可重复评测任务。
 - [src/llm](src/llm)：OpenAI 兼容客户端、Planner、上下文压缩、受控工具调用和审计记录。
 - [python_brain](python_brain)：Python Smart Brain 服务，使用 FastAPI + asyncio 并发运行多个规划 agent。
 - [src/dashboard](src/dashboard)：本地状态面板、REST API、诊断和前端图谱。
@@ -60,6 +62,7 @@ Dashboard 会显示：
 - 任务阶段追踪：准备、扫描、接近、攻击/采集、拾取、验证、失败原因。
 - LLM 状态：模型、最近调用、候选任务、队列接受结果。
 - 服务管理：查看 Dashboard、Minecraft BOT、Python Smart Brain 的状态，并启动/停止/重启本地 Python Brain 进程。
+- 研究任务：`GET /api/research/missions` 查询评测任务目录；测试模式下可用 `POST /api/test/mission` 将 mission 的首个任务注入 test pipeline。
 - Agent 思维导图：具体展示 `snapshot -> general_agent -> sub agents -> Smart Brain -> BehaviorExecutionQueue -> Controller -> feedback` 的 payload。
 - 控制诊断：`task_trace_stale`、`blocked_tasks_present`、夜间敌对压力、低血/饥饿等信号。
 

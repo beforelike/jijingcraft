@@ -125,6 +125,50 @@ test("test pipeline API inserts isolated scenario tasks when test control is ena
   assert.equal(inserted.options.reason, "berry escape");
 });
 
+test("research mission API lists missions without enabling test controls", async () => {
+  const handler = createRequestHandler({ getSnapshot: () => ({ ok: true }) }, { testControlEnabled: false });
+
+  const listResponse = await invoke(handler, { method: "GET", url: "/api/research/missions" });
+  const detailResponse = await invoke(handler, { method: "GET", url: "/api/research/missions/platform_descent" });
+
+  assert.equal(listResponse.statusCode, 200);
+  assert.ok(JSON.parse(listResponse.body).missions.some((mission) => mission.id === "platform_descent"));
+  assert.equal(detailResponse.statusCode, 200);
+  assert.equal(JSON.parse(detailResponse.body).mission.firstTask, "descend_from_platform");
+});
+
+test("research mission API injects a controlled test pipeline task", async () => {
+  let inserted = null;
+  const controller = {
+    insertTestTask(taskType, options) {
+      inserted = { taskType, options };
+      return { type: taskType, source: options.source, metadata: options.metadata };
+    },
+    getTestTaskStatus() {
+      return { active: true, pendingTasks: [{ type: inserted.taskType, source: inserted.options.source }] };
+    }
+  };
+  const handler = createRequestHandler({ getSnapshot: () => ({ ok: true }) }, {
+    testControlEnabled: true,
+    getController: () => controller
+  });
+
+  const response = await invoke(handler, {
+    method: "POST",
+    url: "/api/test/mission",
+    body: JSON.stringify({ missionId: "platform_descent", ttlMs: 45000 })
+  });
+
+  const body = JSON.parse(response.body);
+  assert.equal(response.statusCode, 200);
+  assert.equal(body.mission.id, "platform_descent");
+  assert.equal(body.task.type, "descend_from_platform");
+  assert.equal(inserted.options.source, "research_mission");
+  assert.equal(inserted.options.ttlMs, 45000);
+  assert.equal(inserted.options.metadata.researchMissionId, "platform_descent");
+  assert.ok(inserted.options.metadata.rewards.includes("left_platform"));
+});
+
 test("reset state API delegates to controller runtime reset", async () => {
   let payload = null;
   const controller = {

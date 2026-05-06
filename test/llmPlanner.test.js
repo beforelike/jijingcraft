@@ -123,6 +123,8 @@ test("buildPlannerContext compresses runtime state for dry-run planning", () => 
   assert.ok(context.allowedTasks.includes("collect_wood"));
   assert.ok(context.allowedTasks.includes("descend_from_platform"));
   assert.ok(context.safetyRules.some((rule) => /descend_from_platform/.test(rule)));
+  assert.ok(context.safetyRules.some((rule) => /researchMissions/.test(rule)));
+  assert.ok(context.researchMissions.some((mission) => mission.id === "platform_descent" && mission.tasks.includes("descend_from_platform")));
   assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "collect_wood" && treeClass.treeClass === "CollectWoodTree"));
   assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "hunt_food" && treeClass.constructorSchema.allowAquaticHunt));
   assert.ok(context.availableSkills.some((skill) => skill.id === "starter_food_buffer"));

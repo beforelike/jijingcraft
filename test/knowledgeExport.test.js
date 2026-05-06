@@ -45,10 +45,15 @@ test("exportKnowledge writes generated skill, Patchouli, and Ponderer files", ()
 
   assert.ok(files.length >= 20);
   assert.ok(fs.existsSync(path.join(tempDir, "survival-skills.json")));
+  assert.ok(fs.existsSync(path.join(tempDir, "research-missions.json")));
   assert.ok(fs.existsSync(path.join(tempDir, "patchouli", "bot_survival_guide", "book.json")));
   assert.ok(fs.existsSync(path.join(tempDir, "patchouli", "bot_survival_guide", "zh_cn", "entries", "progression", "early_stone_tools.json")));
   assert.ok(fs.existsSync(path.join(tempDir, "ponderer", "early_stone_tools.json")));
 
   const skillExport = JSON.parse(fs.readFileSync(path.join(tempDir, "survival-skills.json"), "utf8"));
   assert.ok(skillExport.tools.some((tool) => tool.id === "plan_survival_skill"));
+  assert.ok(skillExport.researchMissions.some((mission) => mission.id === "platform_descent"));
+
+  const missionExport = JSON.parse(fs.readFileSync(path.join(tempDir, "research-missions.json"), "utf8"));
+  assert.ok(missionExport.missions.some((mission) => mission.id === "starter_food_buffer"));
 });
