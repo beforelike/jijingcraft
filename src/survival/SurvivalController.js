@@ -2,6 +2,7 @@ const minecraftData = require("minecraft-data");
 const { Movements, goals } = require("mineflayer-pathfinder");
 const { Vec3 } = require("vec3");
 const { AgentOrchestrator } = require("../agents/agentOrchestrator");
+const { requestPlan, ENABLED: PYTHON_BRAIN_ENABLED } = require("../llm/pythonBrainClient");
 const { BehaviorExecutionQueue } = require("../behavior/behaviorExecutionQueue");
 const { ExecutableBehaviorTreeRunner } = require("../behavior/executableBehaviorTree");
 const { LlmTaskQueue } = require("../llm/taskQueue");
@@ -283,7 +284,38 @@ class SurvivalController {
     return result;
   }
 
-  runAgentOrchestration(context = {}) {
+  async runAgentOrchestration(context = {}) {
+    // ── Python Brain path ─────────────────────────────────────────────────
+    if (PYTHON_BRAIN_ENABLED) {
+      try {
+        const planResult = await requestPlan({
+          ...context,
+          behaviorQueue: this.behaviorQueue
+        });
+        if (planResult) {
+          const { trees, planMeta } = planResult;
+          for (const tree of trees) {
+            if (!this.behaviorQueue?.hasTask?.(tree.taskType)) {
+              this.enqueueBehaviorTreeProposal({ tree, at: new Date().toISOString() });
+            }
+          }
+          this.agentStatus = {
+            enabled: true,
+            brainAgent: "python_brain",
+            stageAssessment: planMeta.stageAssessment,
+            confidence: planMeta.confidence,
+            durationMs: planMeta.durationMs,
+            agentProposals: planMeta.agentProposals,
+            updatedAt: new Date().toISOString()
+          };
+          return { status: this.agentStatus, proposals: trees.map((tree) => ({ tree })) };
+        }
+      } catch (err) {
+        this.logger?.warn?.(`python_brain_client_error: ${err.message}`);
+      }
+    }
+
+    // ── JS AgentOrchestrator fallback ─────────────────────────────────────
     if (!this.agentOrchestrator?.tick) return null;
     const result = this.agentOrchestrator.tick({
       ...context,
@@ -1151,7 +1183,7 @@ class SurvivalController {
       const snapshot = this.createSnapshot();
       const progress = this.logSurvivalProgress(snapshot);
       const ruleDecision = decideNextTask(snapshot, this.config);
-      this.runAgentOrchestration({
+      await this.runAgentOrchestration({
         snapshot,
         progress,
         ruleDecision,
