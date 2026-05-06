@@ -28,8 +28,15 @@ Ponderer-1.20.1/
 TouhouLittleMaid-1.20/
 Voyager-main/
 
+# AI tool local config (not project code)
+.claude/
+CLAUDE.md
+.github/instructions/
+
+# Development-only internal notes
+TODO/
+
 # Editor/OS noise
 .vscode/
 .DS_Store
 Thumbs.db
-.claude/settings.local.json
