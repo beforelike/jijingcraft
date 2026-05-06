@@ -324,7 +324,66 @@ function normalizeController(controller = {}) {
     testTasks: normalizePriorityTasks(controller.testTasks),
     priorityTasks: normalizePriorityTasks(controller.priorityTasks),
     behaviorQueue: normalizeBehaviorQueue(controller.behaviorQueue),
-    agents: normalizeAgents(controller.agents)
+    agents: normalizeAgents(controller.agents),
+    actionSummary: normalizeActionSummary(controller.actionSummary),
+    behaviorLog: normalizeBehaviorLog(controller.behaviorLog),
+    explorationStrategy: normalizeExplorationStrategy(controller.explorationStrategy)
+  };
+}
+
+function normalizeActionSummary(summary = null) {
+  if (!summary || typeof summary !== "object") return null;
+  return {
+    currentDecisionType: summary.currentDecisionType ?? null,
+    currentTrace: summary.currentTrace ? {
+      id: summary.currentTrace.id ?? null,
+      taskType: summary.currentTrace.taskType ?? null,
+      status: summary.currentTrace.status ?? null,
+      activePhaseId: summary.currentTrace.activePhaseId ?? null,
+      activePhaseLabel: summary.currentTrace.activePhaseLabel ?? null,
+      updatedAt: summary.currentTrace.updatedAt ?? null
+    } : null,
+    lastAction: summary.lastAction ? {
+      type: summary.lastAction.type ?? null,
+      skillId: summary.lastAction.skillId ?? null,
+      position: serializePosition(summary.lastAction.position),
+      startedAt: summary.lastAction.startedAt ?? null
+    } : null,
+    lastFeedback: summary.lastFeedback ?? null
+  };
+}
+
+function normalizeBehaviorLog(behaviorLog = []) {
+  return Array.isArray(behaviorLog)
+    ? behaviorLog.slice(-20).map((event = {}) => ({
+      at: event.at ?? null,
+      level: event.level ?? "info",
+      kind: event.kind ?? "event",
+      message: event.message ?? "",
+      details: normalizeTraceDetails(event.details ?? {})
+    })).reverse()
+    : [];
+}
+
+function normalizeExplorationStrategy(strategy = null) {
+  if (!strategy || typeof strategy !== "object") return null;
+  return {
+    recentTargets: Array.isArray(strategy.recentTargets) ? strategy.recentTargets.slice(-8).map((entry = {}) => ({
+      position: serializePosition(entry.position),
+      reached: Boolean(entry.reached),
+      purpose: entry.purpose ?? null,
+      at: entry.at ?? null
+    })).reverse() : [],
+    unreachableTargets: Array.isArray(strategy.unreachableTargets) ? strategy.unreachableTargets.slice(0, 8).map((entry = {}) => ({
+      position: serializePosition(entry.position),
+      reason: entry.reason ?? null,
+      label: entry.label ?? null,
+      target: entry.target ?? null,
+      attempts: Number(entry.attempts) || 0,
+      lastDistance: round(Number(entry.lastDistance)),
+      movedDistance: round(Number(entry.movedDistance)),
+      expiresAt: entry.expiresAt ?? null
+    })) : []
   };
 }
 

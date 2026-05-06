@@ -119,6 +119,9 @@ class SurvivalController {
     _huntFoodLastUnreachable = null;
     _huntFoodSwitchCooldownMs = 3500;
     _huntFoodLastSwitchTime = 0;
+    _exploreUnreachableTargets = new Map();
+    _exploreUnreachableDecayMs = 90000;
+    _exploreUnreachableMax = 24;
   constructor(bot, config, logger, options = {}) {
     this.bot = bot;
     this.config = config;
@@ -181,6 +184,7 @@ class SurvivalController {
     this.hazardEscapeBusy = false;
     this.emergencyShelterExitBusy = false;
     this.explorationHistory = [];
+    this.behaviorLog = [];
   }
 
   start() {
@@ -585,7 +589,10 @@ class SurvivalController {
       testTasks: this.getTestTaskStatus(),
       priorityTasks: this.getPriorityTaskStatus(),
       behaviorQueue: this.getBehaviorQueueStatus(),
-      agents: this.getAgentStatus()
+      agents: this.getAgentStatus(),
+      actionSummary: this.getActionSummary(),
+      behaviorLog: this.getBehaviorLogStatus(),
+      explorationStrategy: this.getExplorationStrategyStatus()
     };
   }
 
@@ -775,6 +782,7 @@ class SurvivalController {
   }
 
   recordTaskObservation(kind, message, details = {}, level = "info") {
+    this.recordBehaviorLog(kind, message, details, level);
     if (!this.taskTrace) return;
     this.taskTrace.observations.push({
       at: new Date().toISOString(),
@@ -786,6 +794,43 @@ class SurvivalController {
     this.taskTrace.observations = this.taskTrace.observations.slice(-120);
     this.taskTrace.updatedAt = new Date().toISOString();
     this.publishTaskTrace();
+  }
+
+  recordBehaviorLog(kind, message, details = {}, level = "info") {
+    const event = {
+      at: new Date().toISOString(),
+      level,
+      kind: kind ?? "event",
+      message: message ?? "",
+      details
+    };
+    this.behaviorLog = [...(this.behaviorLog ?? []), event].slice(-80);
+    return event;
+  }
+
+  getBehaviorLogStatus(limit = 20) {
+    return (this.behaviorLog ?? []).slice(-limit);
+  }
+
+  getActionSummary() {
+    return {
+      currentDecisionType: this.currentDecisionType ?? null,
+      currentTrace: this.taskTrace ? {
+        id: this.taskTrace.id ?? null,
+        taskType: this.taskTrace.taskType ?? null,
+        status: this.taskTrace.status ?? null,
+        activePhaseId: this.taskTrace.activePhaseId ?? null,
+        activePhaseLabel: this.taskTrace.activePhaseLabel ?? null,
+        updatedAt: this.taskTrace.updatedAt ?? null
+      } : null,
+      lastAction: this.lastAction ? {
+        type: this.lastAction.type ?? null,
+        skillId: this.lastAction.skillId ?? null,
+        startedAt: this.lastAction.startedAt ?? null,
+        position: this.lastAction.position ?? null
+      } : null,
+      lastFeedback: this.taskFeedback?.lastEvent ?? null
+    };
   }
 
   finishTaskTrace(status = "completed", details = {}) {
@@ -1194,6 +1239,13 @@ class SurvivalController {
   }
 
   recordActionFailure(action, reason, position = this.bot.entity?.position, details = {}) {
+    this.recordBehaviorLog("action_failure", `${action} failed: ${reason}`, {
+      action,
+      reason,
+      target: details.target ?? null,
+      position,
+      radius: details.radius ?? null
+    }, "warn");
     const changed = recordLearningEvent(this.memory, {
       action,
       target: details.target,
@@ -1211,6 +1263,12 @@ class SurvivalController {
   }
 
   recordActionSuccess(action, position = this.bot.entity?.position, details = {}) {
+    this.recordBehaviorLog("action_success", `${action} succeeded`, {
+      action,
+      target: details.target ?? null,
+      position,
+      details
+    });
     const changed = recordLearningEvent(this.memory, {
       action,
       target: details.target,
@@ -3778,6 +3836,7 @@ class SurvivalController {
 
   findSafeExplorationTarget(origin = this.bot.entity?.position, options = {}) {
     if (!this.hasValidPosition(origin)) return null;
+    this.pruneExplorationUnreachable();
     const base = origin.floored();
     const directions = [
       ...CARDINAL_DIRECTIONS,
@@ -3791,6 +3850,8 @@ class SurvivalController {
     const avoidRecent = options.avoidRecent === true;
     const recentRadius = options.recentRadius ?? 8;
     const preferredDistance = options.preferredDistance ?? 18;
+    const avoidUnreachable = options.avoidUnreachable !== false;
+    const unreachableRadius = options.unreachableRadius ?? Math.max(3, Math.min(8, Math.floor(preferredDistance / 3)));
 
     for (const distance of distances) {
       for (const direction of directions) {
@@ -3804,6 +3865,7 @@ class SurvivalController {
           if (this.findNearbyDamagingBlock(candidate, 1.2)) continue;
           if (this.isLearnedAvoidPosition(candidate, "explore", "random_walk")) continue;
           if (avoidRecent && this.isRecentExplorationTarget(candidate, recentRadius)) continue;
+          if (avoidUnreachable && this.isExplorationTargetUnreachable(candidate, unreachableRadius)) continue;
           candidates.push(candidate);
         }
       }
@@ -3814,6 +3876,80 @@ class SurvivalController {
         if (options.preferFar) return this.distanceBetweenPositions(origin, right) - this.distanceBetweenPositions(origin, left);
         return Math.abs(this.distanceBetweenPositions(origin, left) - preferredDistance) - Math.abs(this.distanceBetweenPositions(origin, right) - preferredDistance);
       })[0] ?? null;
+  }
+
+  explorationTargetKey(position) {
+    if (!this.hasValidPosition(position)) return null;
+    const floored = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+    return `${floored.x},${floored.y},${floored.z}`;
+  }
+
+  pruneExplorationUnreachable(now = Date.now()) {
+    if (!this._exploreUnreachableTargets) this._exploreUnreachableTargets = new Map();
+    for (const [key, entry] of this._exploreUnreachableTargets.entries()) {
+      if (!entry?.expiresAt || entry.expiresAt <= now) this._exploreUnreachableTargets.delete(key);
+    }
+  }
+
+  rememberExplorationUnreachable(position, details = {}) {
+    if (!this.hasValidPosition(position)) return false;
+    this.pruneExplorationUnreachable();
+    const key = this.explorationTargetKey(position);
+    if (!key) return false;
+    const storedPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+    const attempts = Number(this._exploreUnreachableTargets.get(key)?.attempts ?? 0) + 1;
+    this._exploreUnreachableTargets.set(key, {
+      key,
+      position: storedPosition,
+      reason: details.reason ?? "target_unreachable",
+      label: details.label ?? null,
+      target: details.target ?? null,
+      attempts,
+      lastDistance: Number.isFinite(Number(details.lastDistance)) ? Number(details.lastDistance) : null,
+      movedDistance: Number.isFinite(Number(details.movedDistance)) ? Number(details.movedDistance) : null,
+      at: Date.now(),
+      expiresAt: Date.now() + this._exploreUnreachableDecayMs
+    });
+    if (this._exploreUnreachableTargets.size > this._exploreUnreachableMax) {
+      const oldest = [...this._exploreUnreachableTargets.entries()].sort((left, right) => left[1].at - right[1].at)[0];
+      if (oldest) this._exploreUnreachableTargets.delete(oldest[0]);
+    }
+    this.recordBehaviorLog("strategy_switch", "explore target marked unreachable", {
+      position: storedPosition,
+      reason: details.reason ?? "target_unreachable",
+      label: details.label ?? null,
+      attempts
+    }, "warn");
+    return true;
+  }
+
+  isExplorationTargetUnreachable(position, radius = 5, now = Date.now()) {
+    if (!this.hasValidPosition(position)) return false;
+    this.pruneExplorationUnreachable(now);
+    for (const entry of this._exploreUnreachableTargets.values()) {
+      if (this.hasValidPosition(entry.position) && this.distanceBetweenPositions(entry.position, position) <= radius) return true;
+    }
+    return false;
+  }
+
+  getExplorationStrategyStatus() {
+    this.pruneExplorationUnreachable();
+    return {
+      recentTargets: (this.explorationHistory ?? []).slice(-8),
+      unreachableTargets: [...(this._exploreUnreachableTargets?.values?.() ?? [])]
+        .sort((left, right) => right.at - left.at)
+        .slice(0, 8)
+        .map((entry) => ({
+          position: entry.position,
+          reason: entry.reason,
+          label: entry.label,
+          target: entry.target,
+          attempts: entry.attempts,
+          lastDistance: entry.lastDistance,
+          movedDistance: entry.movedDistance,
+          expiresAt: entry.expiresAt
+        }))
+    };
   }
 
   isRecentExplorationTarget(position, radius = 8) {
@@ -3834,6 +3970,118 @@ class SurvivalController {
         at: Date.now()
       }
     ].slice(-16);
+  }
+
+  findLocalExplorationStepTarget(origin = this.bot.entity?.position, avoidTarget = null, options = {}) {
+    const targets = this.findLocalExplorationStepTargets(origin, avoidTarget, options);
+    return Array.isArray(targets) ? targets[0] ?? null : null;
+  }
+
+  findLocalExplorationStepTargets(origin = this.bot.entity?.position, avoidTarget = null, options = {}) {
+    if (!this.hasValidPosition(origin)) return null;
+    const base = origin.floored();
+    const away = this.hasValidPosition(avoidTarget)
+      ? new Vec3(base.x - avoidTarget.x, 0, base.z - avoidTarget.z)
+      : null;
+    const awayLength = away ? Math.sqrt(away.x * away.x + away.z * away.z) : 0;
+    const awayDirection = awayLength > 0.1 ? normalizeCardinalDirection(new Vec3(away.x / awayLength, 0, away.z / awayLength)) : normalizeCardinalDirection(this.cardinalDirection());
+    const directions = [
+      awayDirection,
+      ...this.prioritizedCardinalDirections(),
+      ...CARDINAL_DIRECTIONS
+    ].filter((direction, index, list) => list.findIndex((item) => item.x === direction.x && item.z === direction.z) === index);
+    const distances = options.distances ?? [3, 4, 5, 6, 8];
+
+    const candidates = [];
+    for (const distance of distances) {
+      for (const direction of directions) {
+        for (const yOffset of [0, -1, 1, -2, 2]) {
+          const candidate = new Vec3(
+            Math.floor(base.x + direction.x * distance),
+            Math.floor(base.y + yOffset),
+            Math.floor(base.z + direction.z * distance)
+          );
+          if (!this.isSafeStandPosition(candidate)) continue;
+          if (this.findNearbyDamagingBlock(candidate, 1.2)) continue;
+          if (this.isRecentExplorationTarget(candidate, options.recentRadius ?? 3)) continue;
+          if (this.isExplorationTargetUnreachable(candidate, options.unreachableRadius ?? 3)) continue;
+          candidates.push(candidate);
+        }
+      }
+    }
+
+    return candidates
+      .sort((left, right) => this.distanceBetweenPositions(origin, left) - this.distanceBetweenPositions(origin, right));
+  }
+
+  async attemptLocalExplorationStep(details = {}) {
+    const origin = this.cloneValidPosition(this.bot.entity?.position);
+    if (!this.hasValidPosition(origin)) return false;
+    const targets = this.findLocalExplorationStepTargets(origin, details.failedTarget, details);
+    if (!Array.isArray(targets) || targets.length === 0) {
+      this.recordBehaviorLog("strategy_switch", "explore local reposition unavailable", details, "warn");
+      return false;
+    }
+
+    const maxAttempts = Math.max(1, Math.min(4, Number(details.maxLocalRepositionAttempts) || 3));
+    for (const target of targets.slice(0, maxAttempts)) {
+      this.logger.warn(`action=explore; strategy=local_reposition; target=${this.formatPosition(target)}; reason=${details.reason ?? "target_unreachable"}`);
+      this.recordBehaviorLog("strategy_switch", "explore switching to local reposition", {
+        failedTarget: details.failedTarget ?? null,
+        target,
+        label: details.label ?? null,
+        reason: details.reason ?? "target_unreachable"
+      }, "warn");
+      this.recordTaskObservation("strategy_switch", "explore switching to local reposition", {
+        failedTarget: details.failedTarget ?? null,
+        target,
+        reason: details.reason ?? "target_unreachable"
+      }, "warn");
+
+      const reached = await this.gotoNear(target.x, target.y, target.z, 0.75, {
+        label: `${details.label ?? "explore"}_local_reposition`,
+        timeoutMs: Math.min(Math.max(this.config.survival.actionTimeoutMs ?? 8000, 3000), 5000),
+        learnPosition: target,
+        target: "local_reposition",
+        radius: 5,
+        taskFeedback: false,
+        movementStallMs: 1000,
+        movementMinDistance: 0.4,
+        tolerance: 0.5
+      });
+      const movedDistance = this.distanceBetweenPositions(origin, this.bot.entity?.position);
+      const movedSafely = movedDistance >= 0.75 && !this.findNearbyDamagingBlock(this.bot.entity.position, 1.2);
+      this.rememberExplorationTarget(target, { reached: movedSafely, purpose: "local_reposition" });
+      if (movedSafely) {
+        this.logger.info(`action=explore; strategy=local_reposition; moved=${movedDistance.toFixed(1)}; current=${this.formatPosition(this.bot.entity.position)}`);
+        return true;
+      }
+      if (reached) {
+        this.logger.warn(`action=explore; strategy=local_reposition; result=no_movement; moved=${movedDistance.toFixed(1)}; target=${this.formatPosition(target)}`);
+      }
+
+      if (typeof this.bot.lookAt === "function" && typeof this.bot.setControlState === "function") {
+        const lookTarget = target.offset(0.5, 1.2, 0.5);
+        await this.bot.lookAt(lookTarget, true);
+        this.bot.setControlState("sprint", false);
+        this.bot.setControlState("forward", true);
+        this.bot.setControlState("jump", false);
+        await this.wait(650);
+        this.resetMotion();
+        const manualMovedDistance = this.distanceBetweenPositions(origin, this.bot.entity?.position);
+        if (manualMovedDistance >= 0.75 && !this.findNearbyDamagingBlock(this.bot.entity.position, 1.2)) {
+          this.logger.info(`action=explore; strategy=manual_step; moved=${manualMovedDistance.toFixed(1)}; current=${this.formatPosition(this.bot.entity.position)}`);
+          return true;
+        }
+      }
+
+      this.rememberExplorationUnreachable(target, {
+        reason: "local_reposition_failed",
+        label: details.label ?? "explore",
+        movedDistance
+      });
+    }
+    return false;
   }
 
   async holdPositionSafely() {
@@ -6029,10 +6277,20 @@ class SurvivalController {
     const recoveryOptions = exploreBlocked
       ? { distances: [6, 8, 10, 12, 16], avoidRecent: true, recentRadius: 4, preferFar: false, preferredDistance: 10 }
       : { distances: [12, 16, 20, 24, 32], avoidRecent: true, recentRadius: 8, preferFar: false, preferredDistance: 18 };
+    const unreachableCount = this.getExplorationStrategyStatus().unreachableTargets.length;
+    if (unreachableCount > 0) {
+      recoveryOptions.avoidUnreachable = true;
+      recoveryOptions.unreachableRadius = exploreBlocked ? 4 : 6;
+      recoveryOptions.distances = recoveryExplore
+        ? [4, 6, 8, 10, 12, 16]
+        : [8, 12, 16, 20, 24, 32];
+      recoveryOptions.preferredDistance = recoveryExplore ? 8 : 16;
+    }
     if (Number.isFinite(requestedRadius) && requestedRadius > 0) {
       const radius = Math.max(4, Math.min(64, requestedRadius));
       recoveryOptions.distances = [radius];
       recoveryOptions.preferredDistance = radius;
+      recoveryOptions.unreachableRadius = Math.max(3, Math.min(8, Math.floor(radius / 3)));
     }
     const visibleFoodTarget = foodRecovery
       ? this.selectHuntFoodTarget({
@@ -6048,7 +6306,17 @@ class SurvivalController {
         (candidate) => Math.abs(candidate.y - origin.y) <= 1 && candidate.distanceTo(origin) >= 4
       )
       : null;
-    const safeTarget = explicitTarget ?? visibleFoodTarget?.position ?? localRecoveryStand ?? this.findSafeExplorationTarget(origin, recoveryExplore || Number.isFinite(requestedRadius) ? recoveryOptions : {});
+    const explicitTargetUnavailable = explicitTarget && this.isExplorationTargetUnreachable(explicitTarget, recoveryOptions.unreachableRadius ?? 5);
+    if (explicitTargetUnavailable) {
+      this.recordBehaviorLog("strategy_switch", "parameterized explore target is on unreachable cooldown", {
+        explicitTarget,
+        reason: decision.reason ?? null
+      }, "warn");
+    }
+    const safeTarget = (!explicitTargetUnavailable ? explicitTarget : null)
+      ?? visibleFoodTarget?.position
+      ?? localRecoveryStand
+      ?? this.findSafeExplorationTarget(origin, recoveryExplore || Number.isFinite(requestedRadius) || unreachableCount > 0 ? recoveryOptions : {});
     const fallbackScale = recoveryExplore ? (exploreBlocked ? 0.35 : 0.7) : 1;
     const target = safeTarget ?? new Vec3(origin.x + this.randomOffset() * fallbackScale, origin.y, origin.z + this.randomOffset() * fallbackScale);
     const label = explicitTarget ? "parameterized_explore" : visibleFoodTarget ? "food_source_recovery_explore" : foodRecovery ? "food_recovery_explore" : woodRecovery ? "wood_recovery_explore" : "explore";
@@ -6066,10 +6334,44 @@ class SurvivalController {
       radius: Number.isFinite(requestedRadius) ? requestedRadius : (recoveryExplore ? 18 : 10)
     });
     this.rememberExplorationTarget(target, { reached, purpose: parameters.mode ?? label, area: parameters.area ?? null });
+    const currentPosition = this.cloneValidPosition(this.bot.entity?.position);
+    const movedDistance = this.distanceBetweenPositions(origin, currentPosition);
     if (reached) {
       this.logger.info(`action=explore; arrived=${this.formatPosition(this.bot.entity.position)}`);
       return true;
     }
+    const partialMovementThreshold = recoveryExplore ? 2.5 : 4;
+    if (movedDistance >= partialMovementThreshold) {
+      this.logger.warn(`action=explore; target_not_reached_but_moved=${movedDistance.toFixed(1)}; target=${this.formatPosition(target)}; current=${this.formatPosition(this.bot.entity.position)}`);
+      this.rememberExplorationUnreachable(target, {
+        reason: "partial_movement_target_unreachable",
+        label,
+        target: visibleFoodTarget?.name ?? null,
+        movedDistance,
+        lastDistance: this.distanceBetweenPositions(this.bot.entity.position, target)
+      });
+      this.recordTaskObservation("strategy_switch", "explore accepted partial movement and will choose a new target next", {
+        target,
+        movedDistance,
+        label
+      }, "warn");
+      return true;
+    }
+    this.rememberExplorationUnreachable(target, {
+      reason: "target_unreachable_no_movement",
+      label,
+      target: visibleFoodTarget?.name ?? null,
+      movedDistance,
+      lastDistance: this.distanceBetweenPositions(this.bot.entity.position, target)
+    });
+    const localMoved = await this.attemptLocalExplorationStep({
+      failedTarget: target,
+      reason: "target_unreachable_no_movement",
+      label,
+      recentRadius: recoveryExplore ? 2 : 3,
+      unreachableRadius: 3
+    });
+    if (localMoved) return true;
     this.logger.warn(`action=explore; failed to reach target=${this.formatPosition(target)}; current=${this.formatPosition(this.bot.entity.position)}`);
     return false;
   }

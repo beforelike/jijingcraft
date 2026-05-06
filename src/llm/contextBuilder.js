@@ -208,6 +208,91 @@ function navigationAnalysisSummary(analysis = null) {
   };
 }
 
+function botPerspectiveSummary(view = null) {
+  if (!view || typeof view !== "object") return null;
+  return {
+    heading: view.heading ?? null,
+    yaw: round(Number(view.yaw), 3),
+    pitch: round(Number(view.pitch), 3),
+    eye: positionSummary(view.eye),
+    frontBlocks: Array.isArray(view.frontBlocks) ? view.frontBlocks.slice(0, 12).map((block) => ({
+      distance: Number(block.distance) || 0,
+      name: block.name ?? null,
+      solid: Boolean(block.solid),
+      diggable: Boolean(block.diggable),
+      position: positionSummary(block.position)
+    })) : [],
+    targetEntity: view.targetEntity ? {
+      name: view.targetEntity.name ?? null,
+      distance: round(Number(view.targetEntity.distance)),
+      position: positionSummary(view.targetEntity.position)
+    } : null
+  };
+}
+
+function actionSummary(controller = {}) {
+  const summary = controller?.actionSummary ?? null;
+  if (!summary || typeof summary !== "object") return null;
+  return {
+    currentDecisionType: summary.currentDecisionType ?? null,
+    currentTrace: summary.currentTrace ? {
+      taskType: summary.currentTrace.taskType ?? null,
+      status: summary.currentTrace.status ?? null,
+      activePhaseId: summary.currentTrace.activePhaseId ?? null,
+      activePhaseLabel: summary.currentTrace.activePhaseLabel ?? null,
+      updatedAt: summary.currentTrace.updatedAt ?? null
+    } : null,
+    lastAction: summary.lastAction ? {
+      type: summary.lastAction.type ?? null,
+      skillId: summary.lastAction.skillId ?? null,
+      position: positionSummary(summary.lastAction.position),
+      startedAt: summary.lastAction.startedAt ?? null
+    } : null,
+    lastFeedback: summary.lastFeedback ?? null
+  };
+}
+
+function behaviorLogSummary(controller = {}, limit = 10) {
+  return Array.isArray(controller?.behaviorLog)
+    ? controller.behaviorLog.slice(-limit).map((event) => ({
+      at: event.at ?? null,
+      level: event.level ?? "info",
+      kind: event.kind ?? "event",
+      message: event.message ?? "",
+      details: event.details && typeof event.details === "object" ? {
+        reason: event.details.reason ?? null,
+        label: event.details.label ?? null,
+        target: event.details.target ?? null,
+        position: positionSummary(event.details.position),
+        failedTarget: positionSummary(event.details.failedTarget)
+      } : null
+    }))
+    : [];
+}
+
+function explorationStrategySummary(controller = {}) {
+  const strategy = controller?.explorationStrategy ?? null;
+  if (!strategy || typeof strategy !== "object") return null;
+  return {
+    recentTargets: Array.isArray(strategy.recentTargets) ? strategy.recentTargets.slice(-6).map((entry) => ({
+      position: positionSummary(entry.position),
+      reached: Boolean(entry.reached),
+      purpose: entry.purpose ?? null,
+      at: entry.at ?? null
+    })) : [],
+    unreachableTargets: Array.isArray(strategy.unreachableTargets) ? strategy.unreachableTargets.slice(0, 6).map((entry) => ({
+      position: positionSummary(entry.position),
+      reason: entry.reason ?? null,
+      label: entry.label ?? null,
+      target: entry.target ?? null,
+      attempts: Number(entry.attempts) || 0,
+      lastDistance: round(Number(entry.lastDistance)),
+      movedDistance: round(Number(entry.movedDistance)),
+      expiresAt: entry.expiresAt ?? null
+    })) : []
+  };
+}
+
 function learningSummary(memory = {}) {
   return Object.entries(memory.learning?.policyStats ?? {})
     .map(([key, stats]) => ({
@@ -293,6 +378,7 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       navigationTrap: Boolean(snapshot?.navigationTrap),
       navigationAnalysis: navigationAnalysisSummary(snapshot?.navigationAnalysis),
       terrain: terrainSummary(snapshot?.terrain),
+      botPerspective: botPerspectiveSummary(snapshot?.botPerspective),
       isInLava: Boolean(snapshot?.isInLava),
       isBodyInWater: Boolean(snapshot?.isBodyInWater)
     },
@@ -342,7 +428,10 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       taskQueue: controller?.taskQueue ?? null,
       priorityTasks: controller?.priorityTasks ?? null,
       behaviorQueue: controller?.behaviorQueue ?? null,
-      agents: controller?.agents ?? null
+      agents: controller?.agents ?? null,
+      actionSummary: actionSummary(controller),
+      behaviorLog: behaviorLogSummary(controller),
+      explorationStrategy: explorationStrategySummary(controller)
     },
     allowedTasks: listAllowedTasks(),
     taskTreeClasses: taskClassSummary(),
@@ -359,5 +448,9 @@ module.exports = {
   taskClassSummary,
   terrainSummary,
   foodStrategySummary,
+  botPerspectiveSummary,
+  actionSummary,
+  behaviorLogSummary,
+  explorationStrategySummary,
   topInventoryItems
 };
