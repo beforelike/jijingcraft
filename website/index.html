@@ -6,189 +6,246 @@
     <meta name="description" content="MC Survival Bot - Minecraft AI 生存机器人，基于 Mineflayer 的自主生存 BOT">
     <title>MC Survival Bot - Minecraft AI 生存机器人</title>
     <link rel="stylesheet" href="css/style.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/ScrollTrigger.min.js"></script>
 </head>
 <body>
-    <!-- 3D Background Canvas -->
-    <div id="canvas-container"></div>
-
-    <!-- Noise Overlay -->
-    <div class="noise-overlay"></div>
-
-    <!-- Grid Lines -->
-    <div class="grid-lines"></div>
-
-    <!-- Language Switcher -->
-    <div class="lang-switcher">
-        <button class="lang-btn active" onclick="setLanguage('zh')" data-lang="zh">中文</button>
-        <button class="lang-btn" onclick="setLanguage('en')" data-lang="en">EN</button>
-    </div>
-
-    <!-- Main App -->
-    <div id="app">
-        <!-- Hero Section -->
-        <section class="hero">
-            <div class="hero-content">
-                <div class="circuit-lines"></div>
-                <div class="hero-badge">SYSTEM ONLINE</div>
-                <h1 data-i18n="title"><span>MC</span> Survival Bot</h1>
-                <p class="subtitle" data-i18n="subtitle">用 AI 在 Minecraft 中自主生存</p>
-                <div class="hero-buttons">
-                    <a href="#features" class="btn btn-primary">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
-                        </svg>
-                        <span data-i18n="exploreFeatures">探索功能</span>
-                    </a>
-                    <a href="#architecture" class="btn btn-secondary">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
-                            <line x1="8" y1="21" x2="16" y2="21"></line>
-                            <line x1="12" y1="17" x2="12" y2="21"></line>
-                        </svg>
-                        <span data-i18n="viewDemo">查看架构</span>
-                    </a>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-content">
+            <a href="#" class="nav-logo">
+                <div class="nav-logo-icon">🤖</div>
+                <span>MC Survival Bot</span>
+            </a>
+            <div class="nav-links">
+                <a href="#features" class="nav-link">功能</a>
+                <a href="#architecture" class="nav-link">架构</a>
+                <a href="#quickstart" class="nav-link">开始</a>
+                <a href="https://github.com" class="nav-link">GitHub</a>
+                <div class="lang-switcher">
+                    <button class="lang-btn active" onclick="setLanguage('zh')" data-lang="zh">中文</button>
+                    <button class="lang-btn" onclick="setLanguage('en')" data-lang="en">EN</button>
                 </div>
             </div>
-        </section>
+        </div>
+    </nav>
 
-        <!-- Features Section -->
-        <section id="features" class="section">
-            <div class="section-header">
-                <div class="section-label">MODULES</div>
-                <h2 class="section-title" data-i18n="features.title">核心功能</h2>
-                <p class="section-subtitle">智能生存的六大核心模块</p>
-            </div>
-            <div class="features-grid">
-                <div class="feature-card reveal">
-                    <div class="feature-number">01</div>
-                    <div class="feature-icon">🤖</div>
-                    <h3 data-i18n="features.smartBrain.title">Smart Brain</h3>
-                    <p data-i18n="features.smartBrain.desc">AI 智能大脑，理解环境并做出决策</p>
-                </div>
-                <div class="feature-card reveal">
-                    <div class="feature-number">02</div>
-                    <div class="feature-icon">🛡️</div>
-                    <h3 data-i18n="features.safety.title">安全优先</h3>
-                    <p data-i18n="features.safety.desc">本地安全规则层，保障 BOT 生存安全</p>
-                </div>
-                <div class="feature-card reveal">
-                    <div class="feature-number">03</div>
-                    <div class="feature-icon">🌳</div>
-                    <h3 data-i18n="features.behaviorTree.title">行为树</h3>
-                    <p data-i18n="features.behaviorTree.desc">可执行任务流，精确控制每一个动作</p>
-                </div>
-                <div class="feature-card reveal">
-                    <div class="feature-number">04</div>
-                    <div class="feature-icon">📊</div>
-                    <h3 data-i18n="features.dashboard.title">Dashboard</h3>
-                    <p data-i18n="features.dashboard.desc">实时监控面板，掌握 BOT 状态</p>
-                </div>
-                <div class="feature-card reveal">
-                    <div class="feature-number">05</div>
-                    <div class="feature-icon">🧠</div>
-                    <h3 data-i18n="features.memory.title">记忆系统</h3>
-                    <p data-i18n="features.memory.desc">环境学习与适应，持续优化策略</p>
-                </div>
-                <div class="feature-card reveal">
-                    <div class="feature-number">06</div>
-                    <div class="feature-icon">🔬</div>
-                    <h3 data-i18n="features.research.title">研究任务</h3>
-                    <p data-i18n="features.research.desc">可评测任务目录，量化 BOT 能力</p>
-                </div>
-            </div>
-        </section>
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-badge">● 系统在线</div>
+        <h1>
+            让 AI 在 Minecraft 中
+            <span class="gradient">自主生存</span>
+        </h1>
+        <p class="hero-subtitle">
+            基于 Mineflayer 的智能生存 BOT，整合 Smart Brain、行为树、安全规则与实时监控，无需作弊指令。
+        </p>
+        <div class="hero-buttons">
+            <a href="#quickstart" class="btn btn-primary">开始使用</a>
+            <a href="#features" class="btn btn-secondary">了解更多</a>
+        </div>
 
-        <!-- Architecture Section -->
-        <section id="architecture" class="section architecture-section">
-            <div class="section-header">
-                <div class="section-label">ARCHITECTURE</div>
-                <h2 class="section-title" data-i18n="architecture.title">系统架构</h2>
-                <p class="section-subtitle" data-i18n="architecture.subtitle">从感知到执行的完整链路</p>
+        <!-- Dashboard Preview -->
+        <div class="hero-visual">
+            <div class="hero-visual-content">
+                <div class="visual-header">
+                    <div class="visual-dot red"></div>
+                    <div class="visual-dot yellow"></div>
+                    <div class="visual-dot green"></div>
+                    <span class="visual-title">Dashboard - mc-survival-bot</span>
+                </div>
+                <div class="visual-body">
+                    <div class="visual-panel">
+                        <div class="visual-panel-header">Status</div>
+                        <div class="visual-metric">
+                            <span class="visual-metric-value">●</span>
+                            <span class="visual-metric-label">Online</span>
+                        </div>
+                        <div class="visual-chart">
+                            <div class="visual-bar" style="height: 60%"></div>
+                            <div class="visual-bar" style="height: 80%"></div>
+                            <div class="visual-bar" style="height: 45%"></div>
+                            <div class="visual-bar" style="height: 90%"></div>
+                            <div class="visual-bar" style="height: 70%"></div>
+                            <div class="visual-bar" style="height: 85%"></div>
+                        </div>
+                    </div>
+                    <div class="visual-panel">
+                        <div class="visual-panel-header">Health & Food</div>
+                        <div class="visual-metric">
+                            <span class="visual-metric-value">20</span>
+                            <span class="visual-metric-label">/ 20 HP</span>
+                        </div>
+                        <div class="visual-metric" style="margin-top: 8px">
+                            <span class="visual-metric-value" style="color: var(--accent-warning)">18</span>
+                            <span class="visual-metric-label">/ 20 Food</span>
+                        </div>
+                    </div>
+                </div>
             </div>
-            <div class="redstone-circuit">
-                <div class="circuit-node reveal">
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="section">
+        <div class="section-header">
+            <div class="section-label">Features</div>
+            <h2 class="section-title">六大核心能力</h2>
+            <p class="section-subtitle">从感知到执行的完整智能生存系统</p>
+        </div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon">🧠</div>
+                <h3>Smart Brain</h3>
+                <p>Python Brain 多 Agent 并发规划，输出可执行任务而非思考过程</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🛡️</div>
+                <h3>安全优先</h3>
+                <p>本地安全规则层硬接管，LLM 无法覆盖危险决策</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🌳</div>
+                <h3>行为树</h3>
+                <p>准备-感知-移动-执行-验证完整流程，精确控制每个动作</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📊</div>
+                <h3>Dashboard</h3>
+                <p>实时监控面板，状态、决策链、队列、审计一目了然</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">💾</div>
+                <h3>记忆系统</h3>
+                <p>探索记忆、庇护所位置、地形扫描，持续学习优化</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">📋</div>
+                <h3>研究任务</h3>
+                <p>可评测任务目录，量化 BOT 能力，支持回归测试</p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Architecture Section -->
+    <section id="architecture" class="section architecture-section">
+        <div class="section-header">
+            <div class="section-label">Architecture</div>
+            <h2 class="section-title">系统架构</h2>
+            <p class="section-subtitle">从 Minecraft Server 到 Dashboard 的完整数据流</p>
+        </div>
+        <div class="architecture-flow">
+            <div class="arch-row">
+                <div class="arch-node">
+                    <div class="arch-node-icon">🎮</div>
                     <h4>Minecraft Server</h4>
                     <p>游戏环境</p>
                 </div>
-                <div class="circuit-connection"></div>
-                <div class="circuit-node reveal">
-                    <h4>Mineflayer</h4>
+                <div class="arch-node">
+                    <div class="arch-node-icon">🤖</div>
+                    <h4>Mineflayer Bot</h4>
                     <p>Bot 实例</p>
                 </div>
-                <div class="circuit-connection"></div>
-                <div class="circuit-node reveal">
-                    <h4>Controller</h4>
-                    <p>生存控制</p>
+                <div class="arch-node">
+                    <div class="arch-node-icon">🎮</div>
+                    <h4>SurvivalController</h4>
+                    <p>核心控制</p>
                 </div>
-                <div class="circuit-connection"></div>
-                <div class="circuit-node reveal">
+            </div>
+            <div class="arch-arrow">▼</div>
+            <div class="arch-row">
+                <div class="arch-node">
+                    <div class="arch-node-icon">🧠</div>
                     <h4>Smart Brain</h4>
                     <p>AI 决策</p>
                 </div>
-                <div class="circuit-connection"></div>
-                <div class="circuit-node reveal">
+                <div class="arch-node">
+                    <div class="arch-node-icon">📋</div>
+                    <h4>Behavior Queue</h4>
+                    <p>任务队列</p>
+                </div>
+                <div class="arch-node">
+                    <div class="arch-node-icon">📊</div>
                     <h4>Dashboard</h4>
                     <p>监控面板</p>
                 </div>
             </div>
-        </section>
+        </div>
+    </section>
 
-        <!-- Quick Start Section -->
-        <section id="quickstart" class="section quickstart-section">
-            <div class="section-header">
-                <div class="section-label">INSTALLATION</div>
-                <h2 class="section-title" data-i18n="quickStart.title">快速开始</h2>
-                <p class="section-subtitle">5 分钟内启动你的 AI Bot</p>
+    <!-- Quick Start Section -->
+    <section id="quickstart" class="section">
+        <div class="section-header">
+            <div class="section-label">Installation</div>
+            <h2 class="section-title">快速开始</h2>
+            <p class="section-subtitle">5 分钟内启动你的 AI Bot</p>
+        </div>
+        <div class="code-window">
+            <div class="code-header">
+                <div class="code-dot red"></div>
+                <div class="code-dot yellow"></div>
+                <div class="code-dot green"></div>
+                <span class="code-title">terminal</span>
             </div>
-            <div class="terminal-window reveal">
-                <div class="terminal-header">
-                    <div class="terminal-dot red"></div>
-                    <div class="terminal-dot yellow"></div>
-                    <div class="terminal-dot green"></div>
-                    <span class="terminal-title">bash — 80x24</span>
+            <div class="code-body">
+                <div class="code-line">
+                    <span class="code-prompt">$</span>
+                    <span class="code-command">git clone https://github.com/yourusername/mc-survival-bot.git</span>
                 </div>
-                <div class="terminal-body">
-                    <div class="code-block">
-                        <button class="copy-btn" onclick="copyCode(this)">复制</button>
-                        <code># Clone repository
-git clone https://github.com/yourusername/mc-survival-bot.git
-cd mc-survival-bot
-
-# Install dependencies
-npm install
-
-# Configure environment
-cp .env.example .env
-# Edit .env to set MC_HOST
-
-# Launch the BOT
-npm start</code>
-                    </div>
+                <div class="code-line">
+                    <span class="code-prompt">$</span>
+                    <span class="code-command">cd mc-survival-bot && npm install</span>
+                </div>
+                <div class="code-line">
+                    <span class="code-prompt">$</span>
+                    <span class="code-command">cp .env.example .env</span>
+                    <span class="code-comment"># 编辑 .env 设置 MC_HOST</span>
+                </div>
+                <div class="code-line">
+                    <span class="code-prompt">$</span>
+                    <span class="code-command">npm start</span>
                 </div>
             </div>
-        </section>
+        </div>
 
-        <!-- Footer -->
-        <footer class="footer">
-            <div class="footer-content">
-                <div class="footer-links">
-                    <a href="https://github.com/yourusername/mc-survival-bot" target="_blank">GitHub</a>
-                    <a href="#features">功能</a>
-                    <a href="#quickstart">快速开始</a>
-                    <a href="#architecture">架构</a>
-                </div>
-                <p data-i18n="footer.copyright">MC Survival Bot — 开源项目</p>
-                <p data-i18n="footer.license">MIT License</p>
+        <!-- Stats -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value">6</div>
+                <div class="stat-label">核心模块</div>
             </div>
-        </footer>
-    </div>
+            <div class="stat-card">
+                <div class="stat-value">15+</div>
+                <div class="stat-label">行为树类型</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">100%</div>
+                <div class="stat-label">测试覆盖</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value">MIT</div>
+                <div class="stat-label">开源协议</div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-brand">
+                <div class="footer-brand-icon">🤖</div>
+                <span>MC Survival Bot</span>
+            </div>
+            <div class="footer-links">
+                <a href="https://github.com">GitHub</a>
+                <a href="#features">功能</a>
+                <a href="#architecture">架构</a>
+                <a href="#quickstart">文档</a>
+            </div>
+            <p class="footer-copyright">MIT License · 开源项目</p>
+        </div>
+    </footer>
 
     <!-- Scripts -->
     <script src="js/translations.js"></script>
-    <script src="js/three-scene.js"></script>
     <script src="js/main.js"></script>
 </body>
 </html>
