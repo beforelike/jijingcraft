@@ -5,6 +5,7 @@ const {
   CROP_PLANT_ITEMS,
   FOOD_ITEMS,
   HOSTILE_MOBS,
+  MELEE_HOSTILE_MOBS,
   LOG_BLOCKS,
   PICKAXES,
   PLANK_ITEMS,
@@ -16,6 +17,7 @@ const {
 } = require("./constants");
 const { countItems, hasAny } = require("./inventory");
 const { buildingMaterialCount } = require("./progress");
+const { armedMeleeDefenseDistance } = require("./threatResponse");
 
 function nearestHostile(snapshot) {
   return snapshot.entities
@@ -34,11 +36,16 @@ function decideNextTask(snapshot, config) {
   const threatRadius = survival.threatRadius ?? 20;
   const safeModeThreatRadius = survival.safeModeThreatRadius ?? threatRadius;
   const immediateThreatRadius = survival.immediateThreatRadius ?? 8;
+  const daylightThreatRadius = survival.daylightThreatRadius ?? Math.max(6, Math.min(threatRadius, immediateThreatRadius + 2));
   const nightThreatPressureRadius = Math.max(immediateThreatRadius + 2, safeModeThreatRadius);
   const shelterDefenseRadius = survival.shelterDefenseRadius ?? 4;
   const starterFoodTarget = survival.starterFoodTarget ?? Math.min(6, survival.foodStockTarget ?? 6);
   const foodStockTarget = survival.foodStockTarget ?? 6;
   const foodCount = countItems(inventory, FOOD_ITEMS);
+  const achievedMilestones = new Set(snapshot.progress?.achievedMilestones ?? []);
+  const foodBufferAlreadyAchieved = achievedMilestones.has("food_buffer");
+  const starterFoodReady = starterFoodTarget <= 0 || foodCount >= starterFoodTarget || foodBufferAlreadyAchieved;
+  const foodStockReady = foodStockTarget <= 0 || foodCount >= foodStockTarget || foodBufferAlreadyAchieved;
   const shelterBlockTarget = survival.shelterBlockTarget ?? 28;
   const woolTarget = survival.woolTarget ?? 3;
   const cropPlotTarget = survival.cropPlotTarget ?? 6;
@@ -135,7 +142,7 @@ function decideNextTask(snapshot, config) {
     if (hasAny(inventory, SHELTER_BLOCK_ITEMS)) {
       return { type: "wait_out_night", reason: `${hostile.name} is close; sealing temporary shelter before fighting`, target: hostile.name };
     }
-    if (hasWeapon && snapshot.health > survival.criticalHealth && hostile.distance <= Math.max(3, immediateThreatRadius / 3)) {
+    if (hasWeapon && snapshot.health > survival.criticalHealth && MELEE_HOSTILE_MOBS.has(hostile.name) && hostile.distance <= armedMeleeDefenseDistance(immediateThreatRadius)) {
       return { type: "defend_self", reason: `${hostile.name} is ${hostile.distance.toFixed(1)} blocks away and retreat room is limited`, target: hostile.name };
     }
     return { type: "evade_hostiles", reason: `${hostile.name} is ${hostile.distance.toFixed(1)} blocks away`, target: hostile.name };
@@ -145,7 +152,7 @@ function decideNextTask(snapshot, config) {
     if (hasAny(inventory, SHELTER_BLOCK_ITEMS)) {
       return { type: "wait_out_night", reason: `${hostile.name} is within night pressure radius; sealing temporary shelter`, target: hostile.name };
     }
-    return { type: "evade_hostiles", reason: `${hostile.name} is within night pressure radius at ${hostile.distance.toFixed(1)} blocks`, target: hostile.name };
+    return { type: "hold_position", reason: `${hostile.name} is within night pressure radius at ${hostile.distance.toFixed(1)} blocks; holding instead of chasing a distant retreat`, target: hostile.name };
   }
 
   if (snapshot.isNight && hasInventoryFood && snapshot.food < nightFoodBuffer && (!hostile || hostile.distance > immediateThreatRadius)) {
@@ -156,7 +163,7 @@ function decideNextTask(snapshot, config) {
     return { type: "wait_out_night", reason: "returning to remembered starter shelter before waiting out night" };
   }
 
-  if (snapshot.isNight && survival.buildShelter !== false && !hasUsableStarterShelter && hasStonePickaxe && hasStoneWeapon && foodCount >= starterFoodTarget && shelterMaterials >= shelterBlockTarget) {
+  if (snapshot.isNight && survival.buildShelter !== false && !hasUsableStarterShelter && hasStonePickaxe && hasStoneWeapon && starterFoodReady && shelterMaterials >= shelterBlockTarget) {
     return { type: "build_shelter", reason: "shelter materials are ready" };
   }
 
@@ -186,7 +193,7 @@ function decideNextTask(snapshot, config) {
     return { type: "defend_self", reason: `${hostile.name} is ${hostile.distance.toFixed(1)} blocks away and already in melee range`, target: hostile.name };
   }
 
-  if (!snapshot.isNight && hostile && hostile.distance <= threatRadius) {
+  if (!snapshot.isNight && hostile && hostile.distance <= daylightThreatRadius) {
     return { type: "evade_hostiles", reason: `${hostile.name} is ${hostile.distance.toFixed(1)} blocks away`, target: hostile.name };
   }
 
@@ -205,7 +212,7 @@ function decideNextTask(snapshot, config) {
     return { type: "hunt_food", reason: "hunger is low and no food is available" };
   }
 
-  if (survival.buildShelter !== false && !hasUsableStarterShelter && hasStonePickaxe && hasStoneWeapon && foodCount >= starterFoodTarget && shelterMaterials >= shelterBlockTarget) {
+  if (survival.buildShelter !== false && !hasUsableStarterShelter && hasStonePickaxe && hasStoneWeapon && starterFoodReady && shelterMaterials >= shelterBlockTarget) {
     return { type: "build_shelter", reason: "shelter materials are ready" };
   }
 
@@ -255,7 +262,7 @@ function decideNextTask(snapshot, config) {
     return { type: "craft_basic_supplies", reason: "stone tools need sticks and crafting table access" };
   }
 
-  if (starterFoodTarget > 0 && foodCount < starterFoodTarget) {
+  if (!starterFoodReady) {
     return { type: "hunt_food", reason: `starter food reserve is ${foodCount}/${starterFoodTarget}` };
   }
 
@@ -301,7 +308,7 @@ function decideNextTask(snapshot, config) {
     return { type: "build_shelter", reason: "a starter house is required before open-ended exploration" };
   }
 
-  if (foodStockTarget > 0 && foodCount < foodStockTarget) {
+  if (!foodStockReady) {
     return { type: "hunt_food", reason: `large food reserve is ${foodCount}/${foodStockTarget}` };
   }
 

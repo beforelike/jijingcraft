@@ -128,9 +128,14 @@ test("descends from an elevated platform before collecting wood", () => {
   assert.deepEqual(decision.targetPosition, { x: 4, y: 61, z: 4 });
 });
 
-test("evades hostile mobs before hunger and crafting tasks", () => {
-  const decision = decideNextTask(snapshot({ entities: [{ name: "zombie", distance: 18 }] }), config);
+test("evades nearby daylight hostile mobs before hunger and crafting tasks", () => {
+  const decision = decideNextTask(snapshot({ entities: [{ name: "zombie", distance: 9 }] }), config);
   assert.equal(decision.type, "evade_hostiles");
+});
+
+test("continues progression when daylight hostile pressure is distant", () => {
+  const decision = decideNextTask(snapshot({ entities: [{ name: "spider", distance: 17 }] }), config);
+  assert.equal(decision.type, "collect_wood");
 });
 
 test("defends against daylight melee threats when armed", () => {
@@ -146,10 +151,19 @@ test("evades immediate hostile mobs at night", () => {
   assert.equal(decision.type, "evade_hostiles");
 });
 
-test("evades armed hostile mobs at night before they are in melee range", () => {
+test("defends against close armed melee mobs at night before retreating fails", () => {
   const decision = decideNextTask(snapshot({
     isNight: true,
     entities: [{ name: "zombie", distance: 6 }],
+    inventory: { stone_sword: 1 }
+  }), config);
+  assert.equal(decision.type, "defend_self");
+});
+
+test("evades armed ranged mobs at night instead of chasing them", () => {
+  const decision = decideNextTask(snapshot({
+    isNight: true,
+    entities: [{ name: "skeleton", distance: 6 }],
     inventory: { stone_sword: 1 }
   }), config);
   assert.equal(decision.type, "evade_hostiles");
@@ -164,9 +178,9 @@ test("seals a temporary shelter instead of fighting when blocks are available", 
   assert.equal(decision.type, "wait_out_night");
 });
 
-test("evades distant hostile pressure at night without shelter blocks", () => {
+test("holds distant hostile pressure at night without shelter blocks", () => {
   const decision = decideNextTask(snapshot({ isNight: true, entities: [{ name: "zombie", distance: 25 }] }), config);
-  assert.equal(decision.type, "evade_hostiles");
+  assert.equal(decision.type, "hold_position");
 });
 
 test("waits at night instead of fleeing distant mobs when shelter blocks exist", () => {
@@ -377,6 +391,26 @@ test("builds a starter food reserve before gathering house materials", () => {
     progress: { hasCraftingTable: true }
   }), config);
   assert.equal(decision.type, "hunt_food");
+});
+
+test("continues progression when food buffer was already achieved and hunger is stable", () => {
+  const decision = decideNextTask(snapshot({
+    inventory: {
+      stone_pickaxe: 1,
+      stone_sword: 1,
+      cobblestone: 11,
+      furnace: 1,
+      stick: 2,
+      oak_planks: 8,
+      dirt: 16
+    },
+    progress: {
+      hasCraftingTable: true,
+      achievedMilestones: ["food_buffer"]
+    }
+  }), config);
+
+  assert.equal(decision.type, "collect_building_materials");
 });
 
 test("rebuilds a fixed shelter when the remembered one is not usable nearby", () => {

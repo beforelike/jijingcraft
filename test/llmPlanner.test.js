@@ -45,7 +45,7 @@ function plannerInput() {
           waterCount: 2,
           hazardCount: 0,
           groundCounts: [{ name: "snow_block", count: 80 }],
-          cells: [{ dx: 0, dz: 0, position: new Vec3(1, 64, 2), ground: "snow_block", feet: "air", safeStand: true, water: false, hazard: false }]
+          cells: [{ dx: 0, dz: 0, position: new Vec3(1, 64, 2), ground: "snow_block", feet: "air", head: "air", safeStand: true, water: false, hazard: false }]
         },
         regional: {
           radius: 100,
@@ -115,18 +115,30 @@ test("buildPlannerContext compresses runtime state for dry-run planning", () => 
   assert.equal(context.foodStrategy.environmentRisk.waterPressure, true);
   assert.match(context.foodStrategy.planningRule, /Do not hard-code berry priority/);
   assert.ok(context.safetyRules.some((rule) => /environment-aware choice/.test(rule)));
+  assert.equal(context.compactState.gameplay.timeLabel, "morning");
+  assert.equal(Object.hasOwn(context.bot, "oxygen"), false);
+  assert.equal(Object.hasOwn(context.compactState.gameplay, "oxygen"), false);
+  assert.equal(context.compactState.action.current, "hunt_food");
+  assert.equal(context.compactState.surroundings.below, "snow_block");
+  assert.equal(context.compactState.surroundings.head, "air");
+  assert.equal(context.compactState.nearby.entityTypes[0].name, "cow");
+  assert.ok(context.taskParameterKnowledge.commandMappings.some((mapping) => mapping.command === "!collectBlocks" && mapping.mapsTo.includes("collect_stone")));
   assert.equal(context.controller.taskFeedback.blockedTasks[0].taskType, "hunt_food");
   assert.equal(context.inventory[0].name, "cobblestone");
   assert.equal(context.memory.knownBlocks.crafting_table.count, 1);
   assert.deepEqual(context.memory.knownBlocks.crafting_table.nearest[0].position, { x: 0, y: 64, z: 0 });
   assert.equal(context.memory.exploration.coarseCellCount, 1);
   assert.ok(context.allowedTasks.includes("collect_wood"));
-  assert.ok(context.allowedTasks.includes("descend_from_platform"));
+  assert.equal(context.allowedTasks.includes("descend_from_platform"), false);
+  assert.ok(context.localRuleManagedTasks.includes("descend_from_platform"));
+  assert.equal(context.agentPolicy.generalAgentCanRequestEmergencyTasks, false);
   assert.ok(context.safetyRules.some((rule) => /descend_from_platform/.test(rule)));
   assert.ok(context.safetyRules.some((rule) => /researchMissions/.test(rule)));
   assert.ok(context.researchMissions.some((mission) => mission.id === "platform_descent" && mission.tasks.includes("descend_from_platform")));
   assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "collect_wood" && treeClass.treeClass === "CollectWoodTree"));
+  assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "collect_stone" && treeClass.parameterHints.patterns.includes("cobblestone_expands_to_stone")));
   assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "hunt_food" && treeClass.constructorSchema.allowAquaticHunt));
+  assert.equal(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "escape_hazard"), false);
   assert.ok(context.availableSkills.some((skill) => skill.id === "starter_food_buffer"));
 });
 
@@ -332,4 +344,21 @@ test("planner can be forced to run immediately for failure feedback", async () =
 
   assert.equal(first.status, "ok");
   assert.equal(second.status, "ok");
+});
+
+test("planner context includes oxygen only when air is actionable", () => {
+  const waterInput = plannerInput();
+  waterInput.snapshot.isBodyInWater = true;
+  waterInput.snapshot.oxygen = 20;
+
+  const waterContext = buildPlannerContext(waterInput);
+  assert.equal(waterContext.bot.oxygen, 20);
+  assert.equal(waterContext.compactState.gameplay.oxygen, 20);
+  assert.equal(waterContext.agentPolicy.oxygenField, "included_when_relevant");
+
+  const lowOxygenInput = plannerInput();
+  lowOxygenInput.snapshot.oxygen = 10;
+  const lowOxygenContext = buildPlannerContext(lowOxygenInput);
+  assert.equal(lowOxygenContext.bot.oxygen, 10);
+  assert.equal(lowOxygenContext.compactState.gameplay.oxygen, 10);
 });

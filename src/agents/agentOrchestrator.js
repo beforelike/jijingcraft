@@ -44,9 +44,15 @@ function recoveryTaskForBlockedTask(context = {}, blockedTask = null) {
   return null;
 }
 
+function parseTimeMs(value) {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 class AgentOrchestrator {
   constructor(options = {}) {
     this.enabled = options.enabled !== false;
+    this.failedProposalCooldownMs = Math.max(0, Number(options.failedProposalCooldownMs ?? 45000));
     this.lastStatus = {
       enabled: this.enabled,
       generalAgent: agentStatus("general_agent", true, "always_on"),
@@ -101,6 +107,7 @@ class AgentOrchestrator {
     const blockedTask = blockedTaskEntry(context, taskType);
     const proposalTaskType = blockedTask ? recoveryTaskForBlockedTask(context, blockedTask) : taskType;
     if (!proposalTaskType || context.behaviorQueue?.hasTask?.(proposalTaskType)) return [];
+    if (this.isRecentlyFailedProposal(proposalTaskType, context)) return [];
 
     const tree = buildExecutableBehaviorTree(proposalTaskType, {
       priority: taskPriority(proposalTaskType),
@@ -117,6 +124,18 @@ class AgentOrchestrator {
       }
     });
     return [{ tree, at: nowIso() }];
+  }
+
+  isRecentlyFailedProposal(taskType, context = {}) {
+    if (!taskType || this.failedProposalCooldownMs <= 0) return false;
+    const queueFeedback = context.behaviorQueue?.getStatus?.().feedback ?? [];
+    const feedback = [...queueFeedback, ...(this.lastStatus.feedback ?? [])]
+      .filter((entry) => entry?.taskType === taskType && ["failed", "skipped"].includes(entry.outcome));
+    const newestAt = feedback
+      .map((entry) => parseTimeMs(entry.at))
+      .filter((time) => time !== null)
+      .sort((left, right) => right - left)[0];
+    return newestAt !== undefined && Date.now() - newestAt < this.failedProposalCooldownMs;
   }
 
   recordFeedback(feedback = {}) {

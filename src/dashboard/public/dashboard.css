@@ -600,9 +600,7 @@ h2 {
 }
 
 .behavior-tree {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(148px, 1fr));
-  gap: 10px;
+  display: block;
   overflow-x: auto;
   padding-bottom: 2px;
 }
@@ -677,6 +675,101 @@ h2 {
 .tree-phase.failed {
   border-color: rgba(226, 107, 107, 0.72);
   color: var(--red);
+}
+
+.behavior-program {
+  min-width: 420px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(15, 18, 16, 0.48);
+  padding: 12px;
+}
+
+.behavior-program.empty {
+  color: var(--muted);
+}
+
+.program-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.program-header strong {
+  color: var(--text);
+  font-size: 0.98rem;
+}
+
+.program-header span,
+.program-details span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.program-signature {
+  margin-bottom: 8px;
+  color: var(--cyan);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.86rem;
+  overflow-wrap: anywhere;
+}
+
+.program-code {
+  display: grid;
+  gap: 2px;
+  border: 1px solid rgba(58, 64, 59, 0.75);
+  border-radius: 6px;
+  background: rgba(4, 6, 5, 0.42);
+  padding: 8px 0;
+}
+
+.program-line {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 8px;
+  min-height: 22px;
+  padding: 1px 10px;
+  align-items: baseline;
+}
+
+.program-line.active {
+  background: rgba(225, 184, 95, 0.12);
+}
+
+.program-line-no {
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: right;
+  user-select: none;
+}
+
+.program-line code {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.program-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+
+.program-details span {
+  border: 1px solid rgba(58, 64, 59, 0.8);
+  border-radius: 5px;
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+}
+
+.program-phases {
+  margin-top: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
 }
 
 .trace-panel {

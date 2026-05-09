@@ -26,7 +26,45 @@ test("Python Brain request carries compact planner context and hostile flags", (
   assert.equal(request.ruleDecision.type, "collect_wood");
   assert.equal(request.plannerContext.purpose, "smart_brain_task_directive_planning");
   assert.equal(request.snapshot.isBodyInWater, false);
+  assert.equal(Object.hasOwn(request.snapshot, "oxygen"), false);
+  assert.equal(Object.hasOwn(request.plannerContext.bot, "oxygen"), false);
   assert.ok(request.plannerContext.minecraftWiki.environmentRules.some((rule) => /Water is traversable/.test(rule)));
+});
+
+test("Python Brain request keeps oxygen when the bot is in water or low on air", () => {
+  const waterRequest = buildPythonBrainRequest({
+    snapshot: {
+      health: 20,
+      food: 20,
+      oxygen: 20,
+      isBodyInWater: true,
+      position: new Vec3(0, 62, 0),
+      inventory: {},
+      entities: []
+    },
+    ruleDecision: { type: "hunt_food" },
+    progress: {},
+    memory: {}
+  });
+  assert.equal(waterRequest.snapshot.oxygen, 20);
+  assert.equal(waterRequest.plannerContext.bot.oxygen, 20);
+
+  const lowOxygenRequest = buildPythonBrainRequest({
+    snapshot: {
+      health: 20,
+      food: 20,
+      oxygen: 8,
+      isBodyInWater: false,
+      position: new Vec3(0, 64, 0),
+      inventory: {},
+      entities: []
+    },
+    ruleDecision: { type: "hunt_food" },
+    progress: {},
+    memory: {}
+  });
+  assert.equal(lowOxygenRequest.snapshot.oxygen, 8);
+  assert.equal(lowOxygenRequest.plannerContext.bot.oxygen, 8);
 });
 
 test("Python Brain plan entries become local executable behavior trees", () => {
@@ -43,6 +81,15 @@ test("Python Brain plan entries become local executable behavior trees", () => {
   assert.equal(tree.sourcePlanId, "plan-1");
   assert.equal(tree.constructorArgs.count, 4);
   assert.equal(tree.priority, 620);
+});
+
+test("Python Brain general_agent entries cannot instantiate hard emergency tasks", () => {
+  const tree = planEntryToTree({ taskType: "escape_hazard", reason: "oxygen looks weird" }, "plan-2");
+  assert.equal(tree, null);
+
+  const safetyTree = planEntryToTree({ taskType: "escape_hazard", sourceAgent: "safety_agent", requestedBy: "safety_agent" }, "plan-3");
+  assert.equal(safetyTree.taskType, "escape_hazard");
+  assert.equal(safetyTree.sourceAgent, "safety_agent");
 });
 
 test("Python Brain client posts to /plan and normalizes returned trees", async () => {

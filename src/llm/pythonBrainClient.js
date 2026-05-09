@@ -1,6 +1,6 @@
 const { buildExecutableBehaviorTree, taskPriority } = require("../behavior/executableBehaviorTree");
 const { HOSTILE_MOBS } = require("../survival/constants");
-const { buildPlannerContext } = require("./contextBuilder");
+const { buildPlannerContext, isGeneralAgentBlockedTask, isOxygenRelevant } = require("./contextBuilder");
 
 function normalizedBaseUrl(url) {
   return String(url || "http://127.0.0.1:3001").replace(/\/+$/, "");
@@ -51,25 +51,26 @@ function buildPythonBrainRequest(context = {}) {
       }
     }
   });
+  const filteredSnapshot = {
+    position: normalizePosition(snapshot.position),
+    health: Number(snapshot.health ?? 20),
+    food: Number(snapshot.food ?? 20),
+    isDay: snapshot.isDay ?? !snapshot.isNight,
+    isNight: Boolean(snapshot.isNight),
+    timeOfDay: Number(snapshot.timeOfDay ?? 0),
+    entities: (snapshot.entities ?? []).map(normalizeEntity),
+    inventory: snapshot.inventory ?? {},
+    terrain: cloneJson(snapshot.terrain),
+    environmentHazard: cloneJson(snapshot.environmentHazard),
+    navigationTrap: Boolean(snapshot.navigationTrap),
+    isInLava: Boolean(snapshot.isInLava),
+    isBodyInWater: Boolean(snapshot.isBodyInWater)
+  };
+  if (isOxygenRelevant(snapshot)) filteredSnapshot.oxygen = Number(snapshot.oxygen);
 
   return {
     source: "node_survival_controller",
-    snapshot: {
-      position: normalizePosition(snapshot.position),
-      health: Number(snapshot.health ?? 20),
-      food: Number(snapshot.food ?? 20),
-      oxygen: Number(snapshot.oxygen ?? 20),
-      isDay: snapshot.isDay ?? !snapshot.isNight,
-      isNight: Boolean(snapshot.isNight),
-      timeOfDay: Number(snapshot.timeOfDay ?? 0),
-      entities: (snapshot.entities ?? []).map(normalizeEntity),
-      inventory: snapshot.inventory ?? {},
-      terrain: cloneJson(snapshot.terrain),
-      environmentHazard: cloneJson(snapshot.environmentHazard),
-      navigationTrap: Boolean(snapshot.navigationTrap),
-      isInLava: Boolean(snapshot.isInLava),
-      isBodyInWater: Boolean(snapshot.isBodyInWater)
-    },
+    snapshot: filteredSnapshot,
     ruleDecision: ruleDecision ? {
       type: ruleDecision.type,
       reason: ruleDecision.reason ?? null,
@@ -90,6 +91,9 @@ function buildPythonBrainRequest(context = {}) {
 
 function planEntryToTree(entry = {}, sourcePlanId = null) {
   if (!entry || typeof entry.taskType !== "string") return null;
+  const sourceAgent = entry.sourceAgent ?? "general_agent";
+  const requestedBy = entry.requestedBy ?? "general_agent";
+  if (isGeneralAgentBlockedTask(entry.taskType) && (sourceAgent === "general_agent" || requestedBy === "general_agent")) return null;
   try {
     return buildExecutableBehaviorTree(entry.taskType, {
       treeClass: entry.treeClass,
@@ -97,8 +101,8 @@ function planEntryToTree(entry = {}, sourcePlanId = null) {
       constructorArgs: entry.constructorArgs ?? entry.parameters ?? {},
       priority: taskPriority(entry.taskType),
       source: "python_brain",
-      sourceAgent: entry.sourceAgent ?? "general_agent",
-      requestedBy: entry.requestedBy ?? "general_agent",
+      sourceAgent,
+      requestedBy,
       taskRequestId: entry.taskRequestId,
       sourcePlanId,
       reason: entry.reason ?? "python_brain_plan",

@@ -204,7 +204,18 @@ test("dashboard state publishes sanitized bot status", () => {
         generalAgent: { id: "general_agent", active: true },
         agents: [{ id: "survival_agent", active: true, reason: "collect_wood" }],
         lastProposals: [{ taskType: "collect_wood", sourceAgent: "survival_agent" }]
-      }
+      },
+      modeLog: [{
+        at: "2026-05-06T17:02:00.000Z",
+        level: "warn",
+        mode: "queue",
+        event: "behavior_tree_skipped",
+        taskType: "collect_wood",
+        ruleDecision: "escape_hazard",
+        reason: "hard_safety_escape_hazard_priority",
+        outcome: "skipped",
+        details: { queuedTask: "collect_wood", ruleDecision: "escape_hazard", reason: "hard_safety_escape_hazard_priority" }
+      }]
     }
   });
 
@@ -233,6 +244,9 @@ test("dashboard state publishes sanitized bot status", () => {
   assert.equal(status.controller.behaviorQueue.currentTree.startedAt, "2026-05-06T17:01:00.000Z");
   assert.equal(status.controller.behaviorQueue.currentTree.expiresAt, "2026-05-06T17:05:00.000Z");
   assert.equal(status.controller.agents.agents[0].id, "survival_agent");
+  assert.equal(status.controller.modeLog[0].mode, "queue");
+  assert.equal(status.controller.modeLog[0].event, "behavior_tree_skipped");
+  assert.equal(status.controller.modeLog[0].details.queuedTask, "collect_wood");
   assert.equal(status.world.navigationAnalysis.kind, "elevated_support_column");
   assert.equal(status.world.navigationAnalysis.recommendedAction, "controlled_descent");
   assert.equal(status.diagnostics.overall, "warning");

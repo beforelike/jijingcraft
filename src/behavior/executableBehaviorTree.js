@@ -1,5 +1,5 @@
 const { listAllowedTasks } = require("../knowledge/survivalSkills");
-const { FOOD_ITEMS, LOG_BLOCKS } = require("../survival/constants");
+const { FOOD_ITEMS, HOSTILE_MOBS, LOG_BLOCKS } = require("../survival/constants");
 const { countItems, inventoryFromBot } = require("../survival/inventory");
 
 const ALLOWED_TASKS = new Set(listAllowedTasks());
@@ -189,9 +189,22 @@ const TREE_TEMPLATES = Object.freeze({
     postconditions: ["wood_inventory_increased"],
     nodes: [
       { id: "prepare_wood_tool", label: "切换或放空伐木工具", kind: "setup", handler: "prepare_woodcutting_tool", phaseId: "prepare" },
-      { id: "locate_low_log", label: "定位低位可达树干", kind: "sense", handler: "locate_wood_source", phaseId: "search" },
-      { id: "collect_wood_batch", label: "采集树干批次", kind: "action", handler: "execute_task", phaseId: "act" },
-      { id: "verify_wood_gain", label: "验证原木入包", kind: "check", handler: "verify_wood_inventory", phaseId: "verify" }
+      {
+        id: "collect_wood_loop",
+        label: "循环查找并采集树干",
+        kind: "loop",
+        phaseId: "collect_loop",
+        maxIterations: 4,
+        until: "wood_inventory_increased",
+        failureReason: "wood_inventory_not_increased",
+        continueOnChildFailure: true,
+        nodes: [
+          { id: "locate_low_log", label: "定位低位可达树干", kind: "sense", handler: "locate_wood_source", phaseId: "search" },
+          { id: "explore_if_no_wood", label: "没有树时先探索树区", kind: "condition", handler: "explore_for_wood_if_missing", phaseId: "search" },
+          { id: "collect_wood_batch", label: "采集树干批次", kind: "action", handler: "execute_task", phaseId: "act" },
+          { id: "verify_wood_gain", label: "验证原木入包", kind: "check", handler: "verify_wood_inventory", phaseId: "verify", continueOnFailure: true }
+        ]
+      }
     ]
   },
   explore: {
@@ -347,10 +360,20 @@ function validateExecutableBehaviorTree(tree) {
   if (tree && !ALLOWED_TASKS.has(tree.taskType)) errors.push(`unknown_task:${tree?.taskType}`);
   if (!Number.isFinite(Number(tree?.priority))) errors.push("priority_required");
   if (!Array.isArray(tree?.nodes) || tree.nodes.length === 0) errors.push("nodes_required");
-  for (const node of tree?.nodes ?? []) {
+
+  function validateNodes(nodes = []) {
+    for (const node of nodes) {
     if (!node.id) errors.push("node_id_required");
-    if (!node.handler) errors.push(`node_handler_required:${node.id ?? "unknown"}`);
+      if (node.kind === "loop") {
+        if (!Array.isArray(node.nodes) || node.nodes.length === 0) errors.push(`loop_nodes_required:${node.id ?? "unknown"}`);
+        validateNodes(node.nodes ?? []);
+      } else if (!node.handler) {
+        errors.push(`node_handler_required:${node.id ?? "unknown"}`);
+      }
+    }
   }
+
+  validateNodes(tree?.nodes ?? []);
   return { ok: errors.length === 0, errors };
 }
 
@@ -388,6 +411,15 @@ function captureMetrics(controller) {
     food: Number(controller?.bot?.food ?? 20),
     positionKey: currentPositionKey(controller)
   };
+}
+
+function nearestHostileDistance(controller) {
+  if (typeof controller?.nearestEntity !== "function") return null;
+  const radius = controller.config?.survival?.safeModeThreatRadius ?? controller.config?.survival?.threatRadius ?? 20;
+  const hostile = controller.nearestEntity((entity) => HOSTILE_MOBS.has(entity.name), radius);
+  const botPosition = controller.bot?.entity?.position;
+  if (!hostile?.position || !botPosition?.distanceTo) return null;
+  return hostile.position.distanceTo(botPosition);
 }
 
 const DEFAULT_ACTION_HANDLERS = {
@@ -453,18 +485,61 @@ const DEFAULT_ACTION_HANDLERS = {
     return true;
   },
 
-  async locate_wood_source({ controller }) {
+  async locate_wood_source({ controller, context }) {
     const logIds = LOG_BLOCKS
       .map((blockName) => controller.mcData?.blocksByName?.[blockName]?.id)
       .filter((id) => id !== undefined);
     const positions = logIds.length && controller.bot?.findBlocks
       ? controller.bot.findBlocks({ matching: logIds, maxDistance: 64, count: 8 })
       : [];
+    const knownTargets = typeof controller.knownLogTargets === "function"
+      ? controller.knownLogTargets(controller.bot?.entity?.position, 128).slice(0, 8)
+      : [];
+    const knownAreas = typeof controller.knownWoodAreaTargets === "function"
+      ? controller.knownWoodAreaTargets(controller.bot?.entity?.position, 128).slice(0, 8)
+      : [];
     for (const position of positions.slice(0, 8)) {
       const block = controller.bot?.blockAt?.(position);
       if (block?.name) controller.rememberBlock?.(block.name, block.position ?? position);
     }
-    controller.recordTaskObservation?.("behavior_tree", "wood source scan completed", { candidates: positions.length });
+    const firstKnown = knownTargets[0] ?? knownAreas[0] ?? null;
+    if (firstKnown?.position) {
+      context.woodTargetPosition = firstKnown.position;
+      controller.recordTaskObservation?.("behavior_tree", "wood source selected from perception memory", {
+        source: firstKnown.source ?? "known_log_memory",
+        target: firstKnown.position
+      });
+    } else if (positions[0]) {
+      context.woodTargetPosition = positions[0];
+    }
+    context.woodSourceFound = positions.length > 0 || knownTargets.length > 0 || knownAreas.length > 0;
+    controller.recordTaskObservation?.("behavior_tree", "wood source scan completed", {
+      candidates: positions.length,
+      knownTargets: knownTargets.length,
+      knownAreas: knownAreas.length
+    });
+    return {
+      ok: true,
+      woodSourceFound: context.woodSourceFound,
+      targetPosition: firstKnown?.position ?? positions[0] ?? null
+    };
+  },
+
+  async explore_for_wood_if_missing({ controller, context, tree, decision }) {
+    if (context.woodSourceFound) return { ok: true, skipped: true, reason: "wood_source_available" };
+    controller.recordTaskObservation?.("behavior_tree", "no wood source in perception; exploring before retry", { treeId: tree.id });
+    if (typeof controller.explore === "function") {
+      const moved = await controller.explore({ blockedTask: "collect_wood", reason: "behavior_tree_no_wood_source", preferredTerrain: "forest" });
+      return moved ? true : { ok: false, reason: "wood_explore_failed" };
+    }
+    if (typeof controller.executePrimitive === "function") {
+      return controller.executePrimitive({
+        ...decision,
+        type: "explore",
+        constructorArgs: { blockedTask: "collect_wood", reason: "behavior_tree_no_wood_source", preferredTerrain: "forest" },
+        taskParameters: { blockedTask: "collect_wood", reason: "behavior_tree_no_wood_source", preferredTerrain: "forest" }
+      });
+    }
     return true;
   },
 
@@ -599,19 +674,25 @@ const DEFAULT_ACTION_HANDLERS = {
     return true;
   },
 
-  async execute_task({ controller, tree, decision }) {
+  async execute_task({ controller, tree, decision, context }) {
     if (typeof controller.executePrimitive !== "function") throw new Error("controller_execute_primitive_missing");
     const parameters = (tree.constructorArgs && typeof tree.constructorArgs === "object")
       ? tree.constructorArgs
       : (tree.parameters && typeof tree.parameters === "object" ? tree.parameters : {});
+    const mergedParameters = {
+      ...parameters,
+      ...(tree.taskType === "collect_wood" && !parameters.targetPosition && context?.woodTargetPosition
+        ? { targetPosition: context.woodTargetPosition }
+        : {})
+    };
     return controller.executePrimitive({
       ...decision,
       type: tree.taskType,
       behaviorTreeQueued: false,
-      constructorArgs: parameters,
-      taskParameters: parameters,
-      target: parameters.target ?? parameters.targetPosition ?? decision.target,
-      targetCount: parameters.count ?? parameters.quantity ?? decision.targetCount
+      constructorArgs: mergedParameters,
+      taskParameters: mergedParameters,
+      target: mergedParameters.target ?? mergedParameters.targetPosition ?? decision.target,
+      targetCount: mergedParameters.count ?? mergedParameters.quantity ?? decision.targetCount
     });
   },
 
@@ -640,6 +721,11 @@ const DEFAULT_ACTION_HANDLERS = {
     const after = captureMetrics(controller);
     if (tree?.taskType === "hold_position" || tree?.taskType === "wait_out_night") {
       return after.health >= context.before.health ? true : { ok: false, reason: "passive_safety_health_dropped" };
+    }
+    if (tree?.taskType === "evade_hostiles" && after.health >= context.before.health) {
+      const hostileDistance = nearestHostileDistance(controller);
+      const safeDistance = Math.max(10, (controller.config?.survival?.immediateThreatRadius ?? 8) + 2);
+      if (!Number.isFinite(hostileDistance) || hostileDistance > safeDistance) return true;
     }
     return after.positionKey !== context.before.positionKey
       || after.logs !== context.before.logs
@@ -675,28 +761,91 @@ class ExecutableBehaviorTreeRunner {
     });
 
     for (const node of tree.nodes) {
-      const phaseId = node.phaseId ?? node.id;
-      controller.markTaskPhase?.(phaseId, node.label ?? node.id, "active", { behaviorTreeId: tree.id, nodeId: node.id, kind: node.kind });
-      const handler = this.actionHandlers[node.handler];
-      if (!handler) throw new Error(`unknown_behavior_action:${node.handler}`);
-      const result = await handler({ controller, tree, node, decision, context });
-      if (result === false || result?.ok === false) {
-        const reason = result?.reason ?? `node_failed:${node.id}`;
-        controller.markTaskPhase?.(phaseId, node.label ?? node.id, "failed", { behaviorTreeId: tree.id, reason });
-        controller.recordTaskObservation?.("behavior_tree", `node ${node.id} failed`, { reason, treeId: tree.id }, "warn");
-        controller.recordActionFailure?.(tree.taskType, reason, controller.bot?.entity?.position, {
-          target: "behavior_tree",
-          taskType: tree.taskType,
-          behaviorTreeId: tree.id,
-          taskFeedback: NON_BLOCKING_NODE_FAILURES.has(reason) ? false : undefined
-        });
-        return false;
-      }
-      controller.markTaskPhase?.(phaseId, node.label ?? node.id, "completed", { behaviorTreeId: tree.id });
+      const result = await this.executeNode(node, { controller, tree, decision, context });
+      if (!result.ok) return false;
     }
 
     controller.recordTaskObservation?.("behavior_tree", `completed executable behavior tree ${tree.taskType}`, { treeId: tree.id });
     return true;
+  }
+
+  async executeNode(node, runtime, options = {}) {
+    if (node.kind === "loop") return this.executeLoopNode(node, runtime);
+    return this.executeActionNode(node, runtime, options);
+  }
+
+  async executeLoopNode(node, runtime) {
+    const { controller, tree, context } = runtime;
+    const phaseId = node.phaseId ?? node.id;
+    const maxIterations = Math.max(1, Math.min(Number(node.maxIterations) || 1, 12));
+    controller.markTaskPhase?.(phaseId, node.label ?? node.id, "active", { behaviorTreeId: tree.id, nodeId: node.id, kind: node.kind, maxIterations });
+
+    for (let iteration = 1; iteration <= maxIterations; iteration++) {
+      context.loopIteration = iteration;
+      controller.recordTaskObservation?.("behavior_tree", `loop ${node.id} iteration ${iteration}`, { treeId: tree.id, nodeId: node.id });
+      for (const child of node.nodes ?? []) {
+        const result = await this.executeNode(child, runtime, {
+          deferFailureFeedback: Boolean(child.continueOnFailure || node.continueOnChildFailure)
+        });
+        if (!result.ok) {
+          if (child.continueOnFailure || node.continueOnChildFailure) break;
+          controller.markTaskPhase?.(phaseId, node.label ?? node.id, "failed", { behaviorTreeId: tree.id, reason: result.reason, iteration });
+          return result;
+        }
+      }
+      if (this.loopConditionMet(node.until, runtime)) {
+        controller.markTaskPhase?.(phaseId, node.label ?? node.id, "completed", { behaviorTreeId: tree.id, iteration, until: node.until });
+        return { ok: true };
+      }
+    }
+
+    const reason = node.failureReason ?? `loop_condition_not_met:${node.until ?? node.id}`;
+    controller.markTaskPhase?.(phaseId, node.label ?? node.id, "failed", { behaviorTreeId: tree.id, reason, maxIterations });
+    this.recordNodeFailure(reason, runtime);
+    return { ok: false, reason };
+  }
+
+  async executeActionNode(node, runtime, options = {}) {
+    const { controller, tree, decision, context } = runtime;
+    const phaseId = node.phaseId ?? node.id;
+    controller.markTaskPhase?.(phaseId, node.label ?? node.id, "active", { behaviorTreeId: tree.id, nodeId: node.id, kind: node.kind, iteration: context.loopIteration ?? null });
+    const handler = this.actionHandlers[node.handler];
+    if (!handler) throw new Error(`unknown_behavior_action:${node.handler}`);
+    const result = await handler({ controller, tree, node, decision, context });
+    if (result && typeof result === "object") Object.assign(context, result);
+    if (result === false || result?.ok === false) {
+      const reason = result?.reason ?? `node_failed:${node.id}`;
+      controller.markTaskPhase?.(phaseId, node.label ?? node.id, "failed", { behaviorTreeId: tree.id, reason });
+      controller.recordTaskObservation?.("behavior_tree", `node ${node.id} failed`, { reason, treeId: tree.id }, "warn");
+      if (!options.deferFailureFeedback) this.recordNodeFailure(reason, runtime);
+      return { ok: false, reason };
+    }
+    controller.markTaskPhase?.(phaseId, node.label ?? node.id, result?.skipped ? "skipped" : "completed", {
+      behaviorTreeId: tree.id,
+      reason: result?.reason ?? null
+    });
+    return { ok: true };
+  }
+
+  loopConditionMet(condition, runtime) {
+    if (!condition) return false;
+    if (condition === "wood_inventory_increased") {
+      return countLogs(runtime.controller) > runtime.context.before.logs;
+    }
+    if (condition === "inventory_changed") {
+      return inventoryFingerprint(runtime.controller) !== runtime.context.before.inventoryFingerprint;
+    }
+    return false;
+  }
+
+  recordNodeFailure(reason, runtime) {
+    const { controller, tree } = runtime;
+    controller.recordActionFailure?.(tree.taskType, reason, controller.bot?.entity?.position, {
+      target: "behavior_tree",
+      taskType: tree.taskType,
+      behaviorTreeId: tree.id,
+      taskFeedback: NON_BLOCKING_NODE_FAILURES.has(reason) ? false : undefined
+    });
   }
 }
 

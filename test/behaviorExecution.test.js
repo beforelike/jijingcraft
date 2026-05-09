@@ -31,7 +31,12 @@ test("executable behavior tree binds task priority and action nodes", () => {
   assert.equal(tree.sourceAgent, "survival_agent");
   assert.deepEqual(tree.nodes.map((node) => node.id), [
     "prepare_wood_tool",
+    "collect_wood_loop"
+  ]);
+  assert.equal(tree.nodes[1].kind, "loop");
+  assert.deepEqual(tree.nodes[1].nodes.map((node) => node.id), [
     "locate_low_log",
+    "explore_if_no_wood",
     "collect_wood_batch",
     "verify_wood_gain"
   ]);
@@ -113,8 +118,46 @@ test("behavior runner executes action nodes and verifies wood gain", async () =>
   const ok = await runner.execute(buildExecutableBehaviorTree("collect_wood", { constructorArgs: { count: 3, targetPosition: { x: 4, y: 64, z: 0 } } }), controller, { type: "collect_wood" });
 
   assert.equal(ok, true);
-  assert.equal(phases.filter((phase) => phase.status === "completed").length, 4);
+  assert.ok(phases.filter((phase) => phase.status === "completed").length >= 4);
   assert.ok(observations.some((observation) => /completed executable behavior tree/.test(observation.message)));
+});
+
+test("collect wood behavior tree can explore and loop before succeeding", async () => {
+  let inventoryItems = [];
+  let collectAttempts = 0;
+  let exploreAttempts = 0;
+  const controller = {
+    mcData: { blocksByName: { oak_log: { id: 1 } } },
+    bot: {
+      health: 20,
+      food: 20,
+      entity: { position: new Vec3(0, 64, 0) },
+      inventory: { items: () => inventoryItems },
+      findBlocks: () => (exploreAttempts > 0 ? [new Vec3(8, 64, 0)] : [])
+    },
+    hasValidPosition: (position) => Number.isFinite(position?.x),
+    markTaskPhase: () => {},
+    recordTaskObservation: () => {},
+    recordActionFailure: () => assert.fail("loop should recover before final failure"),
+    ensureWoodcuttingTool: async () => true,
+    explore: async () => {
+      exploreAttempts++;
+      return true;
+    },
+    executePrimitive: async (decision) => {
+      assert.equal(decision.type, "collect_wood");
+      collectAttempts++;
+      if (collectAttempts >= 2) inventoryItems = [{ name: "oak_log", count: 4 }];
+      return true;
+    }
+  };
+  const runner = new ExecutableBehaviorTreeRunner();
+
+  const ok = await runner.execute(buildExecutableBehaviorTree("collect_wood", { constructorArgs: { count: 4 } }), controller, { type: "collect_wood" });
+
+  assert.equal(ok, true);
+  assert.equal(exploreAttempts, 1);
+  assert.equal(collectAttempts, 2);
 });
 
 test("behavior runner treats inventory item changes as task progress", async () => {
@@ -361,6 +404,19 @@ test("general agent redirects blocked rule tasks to recovery behavior trees", ()
   assert.equal(result.proposals[0].tree.taskType, "explore");
   assert.equal(result.proposals[0].tree.metadata.blockedTask, "hunt_food");
   assert.match(result.proposals[0].tree.reason, /blocked hunt_food to explore/);
+});
+
+test("general agent backs off recently failed behavior tree proposals", () => {
+  const orchestrator = new AgentOrchestrator({ failedProposalCooldownMs: 60000 });
+  orchestrator.recordFeedback({ taskType: "hunt_food", outcome: "failed", reason: "postcondition_failed" });
+
+  const result = orchestrator.tick({
+    ruleDecision: { type: "hunt_food", reason: "need food" },
+    progress: { stage: "food_buffer" },
+    behaviorQueue: { hasTask: () => false }
+  });
+
+  assert.deepEqual(result.proposals, []);
 });
 
 test("controller primitive execution propagates failed task results", async () => {
@@ -816,4 +872,49 @@ test("busy watchdog gives long safety tasks a wider running stale window", () =>
 
   assert.equal(interrupted, false);
   assert.equal(controller.behaviorQueue.getStatus().currentTree.taskType, "wait_out_night");
+});
+
+test("evade hostile behavior tree accepts stable distance outside the immediate buffer", async () => {
+  const runner = new ExecutableBehaviorTreeRunner();
+  const tree = buildExecutableBehaviorTree("evade_hostiles");
+  const hostile = { name: "spider", position: new Vec3(20, 64, 0) };
+  const controller = {
+    config: { survival: { immediateThreatRadius: 8, safeModeThreatRadius: 28 } },
+    bot: {
+      health: 20,
+      food: 20,
+      entity: { position: new Vec3(0, 64, 0) },
+      inventory: { items: () => [] }
+    },
+    hasValidPosition: (position) => Boolean(position),
+    nearestEntity: () => hostile,
+    executePrimitive: async () => true,
+    recordTaskObservation() {},
+    markTaskPhase() {},
+    recordActionFailure() {}
+  };
+
+  const result = await runner.execute(tree, controller, { type: "evade_hostiles" });
+
+  assert.equal(result, true);
+});
+
+test("controller keeps passive behavior trees open while their rule remains active", () => {
+  const controller = Object.create(SurvivalController.prototype);
+
+  assert.equal(controller.shouldKeepPassiveBehaviorTreeOpen(
+    { type: "wait_out_night", behaviorTreeQueued: true },
+    { type: "wait_out_night" },
+    { isNight: true }
+  ), true);
+  assert.equal(controller.shouldKeepPassiveBehaviorTreeOpen(
+    { type: "wait_out_night", behaviorTreeQueued: true },
+    { type: "wait_out_night" },
+    { isNight: false }
+  ), false);
+  assert.equal(controller.shouldKeepPassiveBehaviorTreeOpen(
+    { type: "hold_position", behaviorTreeQueued: true },
+    { type: "hold_position" },
+    {}
+  ), true);
 });

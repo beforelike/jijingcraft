@@ -62,6 +62,8 @@ const elements = {
   phaseTimeline: document.getElementById("phaseTimeline"),
   taskObservations: document.getElementById("taskObservations"),
   taskHistory: document.getElementById("taskHistory"),
+  modeLogCount: document.getElementById("modeLogCount"),
+  modeLog: document.getElementById("modeLog"),
   skillTitle: document.getElementById("skillTitle"),
   skillTasks: document.getElementById("skillTasks"),
   llmStatus: document.getElementById("llmStatus"),
@@ -1075,42 +1077,235 @@ function renderProgress(status) {
   if (!elements.milestones.children.length) clearAndEmpty(elements.milestones);
 }
 
+const TASK_FUNCTION_FALLBACKS = {
+  collect_wood: "collectWood",
+  hunt_food: "huntFood",
+  collect_stone: "collectStone",
+  collect_building_materials: "collectBuildingMaterials",
+  build_shelter: "buildStarterShelter",
+  explore: "explore",
+  wait_out_night: "waitOutNight",
+  hold_position: "holdPositionSafely",
+  evade_hostiles: "evadeHostiles",
+  defend_self: "defendSelf",
+  defend_shelter: "defendShelter",
+  escape_hazard: "escapeHazard",
+  escape_pit: "escapePit",
+  descend_from_platform: "descendFromPlatform",
+  eat_food: "eatFood",
+  recover_starvation: "recoverFromStarvation"
+};
+
+function behaviorTaskLabel(taskType, status = {}) {
+  const flattened = (status.behaviorTree ?? []).flatMap((group) => group.nodes ?? []);
+  return flattened.find((node) => node.id === taskType)?.label ?? taskType ?? "任务";
+}
+
+function functionNameForTask(taskType, tree = {}) {
+  return tree.taskFunction ?? TASK_FUNCTION_FALLBACKS[taskType] ?? String(taskType ?? "runTask").replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function formatFunctionArgValue(value) {
+  if (value === null || value === undefined) return "auto";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "object" && ["x", "y", "z"].every((key) => Number.isFinite(Number(value[key])))) {
+    return `{x:${Math.round(Number(value.x))}, y:${Math.round(Number(value.y))}, z:${Math.round(Number(value.z))}}`;
+  }
+  return shortJson(value, 80);
+}
+
+function functionArgsFromTree(tree = {}, status = {}) {
+  const args = { ...(tree.constructorArgs ?? tree.parameters ?? {}) };
+  if (!Object.keys(args).length && status.decision?.target) args.target = status.decision.target;
+  return args;
+}
+
+function formatFunctionSignature(taskType, tree = {}, status = {}) {
+  const args = functionArgsFromTree(tree, status);
+  const argEntries = Object.entries(args)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${formatFunctionArgValue(value)}`);
+  return `${functionNameForTask(taskType, tree)}(${argEntries.join(", ")})`;
+}
+
+function dispatchTitle(taskType, tree = {}, status = {}) {
+  const args = functionArgsFromTree(tree, status);
+  const count = args.count ?? args.quantity ?? args.targetCount;
+  const suffix = Number.isFinite(Number(count)) ? `（${Number(count)}）` : "";
+  return `分派任务：${behaviorTaskLabel(taskType, status)}${suffix}`;
+}
+
+function nodeCallName(node = {}) {
+  if (node.handler === "execute_task") return "runPrimitiveTask";
+  if (!node.handler) return node.id ?? "step";
+  return String(node.handler).replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+function conditionTextForNode(node = {}) {
+  if (node.id === "explore_if_no_wood") return "if (tree == none)";
+  return `if (${node.id})`;
+}
+
+function loopConditionText(node = {}) {
+  if (node.until === "wood_inventory_increased") return `while (!inventory.hasLogs && attempts < ${node.maxIterations ?? 4})`;
+  if (node.until) return `while (!${node.until} && attempts < ${node.maxIterations ?? 1})`;
+  return `while (attempts < ${node.maxIterations ?? 1})`;
+}
+
+function programLinesForNode(node = {}, depth = 1) {
+  const indent = "  ".repeat(depth);
+  if (node.kind === "loop") {
+    const lines = [`${indent}${loopConditionText(node)} {`];
+    for (const child of node.nodes ?? []) lines.push(...programLinesForNode(child, depth + 1));
+    lines.push(`${indent}}`);
+    return lines;
+  }
+  if (node.kind === "condition") {
+    return [
+      `${indent}${conditionTextForNode(node)} {`,
+      `${indent}  ${nodeCallName(node)}()`,
+      `${indent}}`
+    ];
+  }
+  if (node.id === "locate_low_log") return [`${indent}tree = locateWoodSource(perception.regional.treeCells, memory.knownLogs)`];
+  if (node.id === "collect_wood_batch") return [`${indent}collectWoodBatch(tree, count)`];
+  if (node.id === "verify_wood_gain") return [`${indent}inventory.hasLogs = verifyWoodGain()`];
+  return [`${indent}${nodeCallName(node)}()`];
+}
+
+function fallbackProgramLines(taskType, signature) {
+  if (taskType === "collect_wood") {
+    return [
+      `${signature} {`,
+      "  tree = locateWoodSource(perception.regional.treeCells, memory.knownLogs)",
+      "  while (tree == none) {",
+      "    explore(direction=randomCardinal(), distance=20)",
+      "    tree = locateWoodSource(perception, memory)",
+      "  }",
+      "  collectWoodBatch(tree, count)",
+      "  verifyWoodGain()",
+      "}"
+    ];
+  }
+  return [
+    `${signature} {`,
+    "  prepare()",
+    "  if (!preconditionsOk) recoverOrExplore()",
+    "  runPrimitiveTask()",
+    "  verifyResult()",
+    "}"
+  ];
+}
+
+function programLinesForTree(taskType, tree = {}, status = {}) {
+  const signature = formatFunctionSignature(taskType, tree, status);
+  if (!Array.isArray(tree.nodes) || !tree.nodes.length) return fallbackProgramLines(taskType, signature);
+  const lines = [`${signature} {`];
+  for (const node of tree.nodes) lines.push(...programLinesForNode(node, 1));
+  lines.push("}");
+  return lines;
+}
+
+function activeBehaviorProgramSource(status = {}) {
+  const behaviorQueue = status.controller?.behaviorQueue ?? {};
+  const currentTree = behaviorQueue.currentTree ?? null;
+  const pendingTree = behaviorQueue.pendingTrees?.[0] ?? null;
+  const taskType = currentTree?.taskType ?? status.taskTrace?.taskType ?? status.decision?.type ?? pendingTree?.taskType ?? null;
+  return {
+    taskType,
+    tree: currentTree ?? pendingTree ?? {},
+    currentTree,
+    pendingTree,
+    behaviorQueue
+  };
+}
+
+function appendProgramLine(parent, line, index, activeNeedle = null) {
+  const row = document.createElement("div");
+  row.className = "program-line";
+  const lineNo = document.createElement("span");
+  lineNo.className = "program-line-no";
+  lineNo.textContent = String(index + 1).padStart(2, "0");
+  const code = document.createElement("code");
+  code.textContent = line;
+  if (activeNeedle && line.includes(activeNeedle)) row.classList.add("active");
+  row.append(lineNo, code);
+  parent.append(row);
+}
+
 function renderBehaviorTree(status) {
   const tree = status.behaviorTree ?? [];
   const activeGroup = tree.find((group) => group.active);
-  setText(elements.activeBranch, activeGroup ? activeGroup.label : "--");
+  const programSource = activeBehaviorProgramSource(status);
+  const activeTaskType = programSource.taskType;
+  const activeLabel = activeTaskType ? behaviorTaskLabel(activeTaskType, status) : null;
+  setText(elements.activeBranch, activeLabel ?? (activeGroup ? activeGroup.label : "--"));
   elements.behaviorTree.replaceChildren();
-  for (const group of tree) {
-    const groupElement = document.createElement("div");
-    groupElement.className = `tree-group ${group.active ? "active" : ""}`;
-    const title = document.createElement("h3");
-    title.textContent = group.label;
-    const stack = document.createElement("div");
-    stack.className = "node-stack";
-    for (const node of group.nodes ?? []) {
-      const nodeElement = document.createElement("div");
-      nodeElement.className = `node ${node.active ? "active" : ""}`;
-      nodeElement.textContent = node.label;
-      const detail = document.createElement("small");
-      detail.textContent = `${node.id} · ${taskLevelText(node)} · P${node.priority}`;
-      nodeElement.append(detail);
-      const visiblePhases = (node.phases ?? []).filter((phase) => node.active || phase.status !== "pending");
-      if (visiblePhases.length) {
-        const phaseStack = document.createElement("div");
-        phaseStack.className = "tree-phases";
-        for (const phase of visiblePhases) {
-          const phaseElement = document.createElement("span");
-          phaseElement.className = `tree-phase ${phase.status ?? "pending"} ${phase.active ? "active" : ""}`;
-          phaseElement.textContent = phase.label;
-          phaseStack.append(phaseElement);
-        }
-        nodeElement.append(phaseStack);
-      }
-      stack.append(nodeElement);
-    }
-    groupElement.append(title, stack);
-    elements.behaviorTree.append(groupElement);
+
+  if (!activeTaskType) {
+    const empty = document.createElement("div");
+    empty.className = "behavior-program empty";
+    empty.textContent = "等待任务分派";
+    elements.behaviorTree.append(empty);
+    return;
   }
+
+  const card = document.createElement("div");
+  card.className = "behavior-program";
+  const header = document.createElement("div");
+  header.className = "program-header";
+  const title = document.createElement("strong");
+  title.textContent = dispatchTitle(activeTaskType, programSource.tree, status);
+  const meta = document.createElement("span");
+  meta.textContent = `${programSource.tree.treeClass ?? "LocalRule"} · ${taskLevelText(programSource.tree)} · P${programSource.tree.priority ?? "--"}`;
+  header.append(title, meta);
+
+  const signature = document.createElement("div");
+  signature.className = "program-signature";
+  signature.textContent = formatFunctionSignature(activeTaskType, programSource.tree, status);
+
+  const code = document.createElement("div");
+  code.className = "program-code";
+  const activePhase = status.taskTrace?.activePhaseId ?? null;
+  const activeNeedle = activePhase === "search" ? "locate"
+    : activePhase === "act" ? "collect"
+      : activePhase === "verify" ? "verify"
+        : null;
+  programLinesForTree(activeTaskType, programSource.tree, status)
+    .forEach((line, index) => appendProgramLine(code, line, index, activeNeedle));
+
+  const details = document.createElement("div");
+  details.className = "program-details";
+  const queueLabel = programSource.currentTree ? "current" : (programSource.pendingTree ? "pending" : "local");
+  const detailItems = [
+    `queue=${queueLabel}`,
+    `source=${programSource.tree.source ?? status.decision?.reason ?? "local_rule"}`,
+    `args=${shortJson(functionArgsFromTree(programSource.tree, status), 120)}`
+  ];
+  for (const item of detailItems) {
+    const pill = document.createElement("span");
+    pill.textContent = item;
+    details.append(pill);
+  }
+
+  const phases = (tree.flatMap((group) => group.nodes ?? []).find((node) => node.id === activeTaskType)?.phases ?? [])
+    .filter((phase) => phase.status !== "pending" || phase.active);
+  if (phases.length) {
+    const phaseStack = document.createElement("div");
+    phaseStack.className = "tree-phases program-phases";
+    for (const phase of phases) {
+      const phaseElement = document.createElement("span");
+      phaseElement.className = `tree-phase ${phase.status ?? "pending"} ${phase.active ? "active" : ""}`;
+      phaseElement.textContent = phase.label;
+      phaseStack.append(phaseElement);
+    }
+    card.append(header, signature, code, details, phaseStack);
+  } else {
+    card.append(header, signature, code, details);
+  }
+
+  elements.behaviorTree.append(card);
 }
 
 function renderTaskTrace(status) {
@@ -1231,6 +1426,32 @@ function renderSkillPlan(status) {
     item.textContent = "--";
     elements.skillTasks.append(item);
   }
+}
+
+function renderModeLog(status) {
+  const modeLog = status.controller?.modeLog ?? [];
+  if (!elements.modeLog || !elements.modeLogCount) return;
+  setText(elements.modeLogCount, modeLog.length);
+  elements.modeLog.replaceChildren();
+  for (const event of modeLog.slice(0, 30)) {
+    const row = document.createElement("div");
+    row.className = `event-row ${event.level ?? "info"}`;
+    const mode = document.createElement("strong");
+    mode.textContent = `${event.mode ?? "local"}:${event.event ?? "event"}`;
+    const message = document.createElement("span");
+    message.textContent = [
+      event.taskType ? `task=${event.taskType}` : null,
+      event.ruleDecision ? `rule=${event.ruleDecision}` : null,
+      event.outcome ? `outcome=${event.outcome}` : null,
+      event.reason ? `reason=${event.reason}` : null
+    ].filter(Boolean).join(" · ") || "--";
+    const details = document.createElement("small");
+    details.textContent = formatDetails(event.details);
+    row.append(mode, message);
+    if (details.textContent) row.append(details);
+    elements.modeLog.append(row);
+  }
+  if (!modeLog.length) clearAndEmpty(elements.modeLog, "暂无本地模式日志");
 }
 
 function renderLlm(status) {
@@ -1355,6 +1576,7 @@ function render(status) {
   renderAgentMindMap(status);
   renderBehaviorTree(status);
   renderTaskTrace(status);
+  renderModeLog(status);
   renderSkillPlan(status);
   renderLlm(status);
   renderEntities(status);

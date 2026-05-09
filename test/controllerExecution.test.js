@@ -236,6 +236,25 @@ test("task feedback recovery success clears the original blocked task", () => {
   assert.equal(status.lastEvent.recoveryTask, "explore");
 });
 
+test("local mode log is published with controller state", () => {
+  const controller = createController();
+  controller.currentDecisionType = "collect_wood";
+
+  controller.recordModeLog("queue", "current_work_released", {
+    reason: "busy_trace_stale",
+    outcome: "failed_current_work",
+    interruptedQueues: [{ queue: "behavior", taskType: "collect_wood" }]
+  }, "warn");
+
+  const state = controller.buildControllerState();
+
+  assert.equal(state.modeLog[0].mode, "queue");
+  assert.equal(state.modeLog[0].event, "current_work_released");
+  assert.equal(state.modeLog[0].taskType, "collect_wood");
+  assert.equal(state.modeLog[0].reason, "busy_trace_stale");
+  assert.equal(state.modeLog[0].details.interruptedQueues[0].queue, "behavior");
+});
+
 test("task feedback success clears recent failures for completed task", () => {
   const controller = createController();
   controller.currentDecisionType = "collect_wood";
@@ -908,6 +927,35 @@ test("starter shelter surface site rejects covered underground spaces", () => {
   assert.equal(controller.isStarterShelterSurfaceBuildSite(surfaceBase), true);
 });
 
+test("starter shelter site selection skips learned unreachable surface sites", () => {
+  const avoidedBase = new Vec3(-1, 64, -1);
+  const controller = createController({
+    findSurfaceSample: (x, z) => ({ position: new Vec3(x, 63, z) }),
+    isStarterShelterSurfaceBuildSite: (base) => !(base.x === 0 && base.z === 0)
+  });
+  controller.memory.learning.avoidedPositions.push({
+    key: "starter_shelter_surface_site:surface_7x7_house_site",
+    action: "starter_shelter_surface_site",
+    target: "surface_7x7_house_site",
+    reason: "movement stalled",
+    position: { x: avoidedBase.x, y: avoidedBase.y, z: avoidedBase.z },
+    dimension: "overworld",
+    radius: 0.1,
+    failures: 1,
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+    updatedAt: new Date().toISOString()
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: () => ({ name: "air", boundingBox: "empty" })
+  };
+
+  const selected = controller.findStarterShelterBuildBase(controller.bot.entity.position, 2);
+
+  assert.notDeepEqual(selected, avoidedBase);
+  assert.ok(selected);
+});
+
 test("platform descent edge is selected from the current platform, not water center height", () => {
   const controller = createController();
   const blockAt = (position) => {
@@ -1074,6 +1122,62 @@ test("explore exits water before applying normal night hold", async () => {
   assert.equal(heldAtNight, false);
 });
 
+test("leaveWaterForTask requires the bot to actually leave water", async () => {
+  const controller = createController();
+  controller.isBodyInWater = () => true;
+  controller.findNearbyWaterExitStand = () => null;
+  controller.swimTowardAir = async () => true;
+  controller.bot = {
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 60, 0) }
+  };
+
+  const leftWater = await controller.leaveWaterForTask("explore");
+
+  assert.equal(leftWater, false);
+});
+
+test("explore does not continue dry exploration while still underwater", async () => {
+  const controller = createController();
+  controller.isBodyInWater = () => true;
+  controller.leaveWaterForTask = async () => false;
+  controller.shouldEscapeForLowOxygen = () => false;
+  controller.gotoNear = async () => assert.fail("dry explore should not run underwater");
+  controller.bot = {
+    oxygenLevel: 20,
+    health: 20,
+    food: 20,
+    entity: { position: new Vec3(0, 60, 0) }
+  };
+
+  const explored = await controller.explore({ type: "explore" });
+
+  assert.equal(explored, false);
+});
+
+test("huntFood leaves water before non-aquatic food search", async () => {
+  const controller = createController();
+  let waterExitTask = null;
+  controller.isBodyInWater = () => true;
+  controller.leaveWaterForTask = async (taskType) => {
+    waterExitTask = taskType;
+    return true;
+  };
+  controller.selectHuntFoodTarget = () => assert.fail("hunt target selection should wait until after water exit");
+  controller.bot = {
+    food: 15,
+    health: 20,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 60, 0) },
+    inventory: { items: () => [] }
+  };
+
+  const hunted = await controller.huntFood({ reason: "starter food reserve" });
+
+  assert.equal(hunted, true);
+  assert.equal(waterExitTask, "hunt_food");
+});
+
 test("evade hostiles exits water before land retreat logic", async () => {
   const controller = createController();
   let waterExitLabel = null;
@@ -1233,6 +1337,80 @@ test("digBlockAt refuses to break doors", async () => {
   assert.equal(dug, false);
 });
 
+function positionKey(position) {
+  return `${position.x},${position.y},${position.z}`;
+}
+
+test("starter shelter site search resumes a remembered partial blueprint", () => {
+  const origin = new Vec3(0, 64, 0);
+  const base = new Vec3(8, 64, 0);
+  const controller = createController();
+  const partialKeys = new Set(controller.createStarterShelterPlan(base).slice(0, 12).map(positionKey));
+  controller.progressState.starterShelterPosition = { x: base.x, y: base.y, z: base.z };
+  controller.bot = {
+    entity: { position: origin },
+    blockAt: (position) => {
+      const key = positionKey(position);
+      if (partialKeys.has(key)) return { name: "oak_planks", position, boundingBox: "block" };
+      if (position.y === 63) return { name: "grass_block", position, boundingBox: "block" };
+      return { name: "air", position, boundingBox: "empty" };
+    }
+  };
+
+  const selected = controller.findStarterShelterBuildBase(origin, 4);
+  const analysis = controller.analyzeStarterShelterBuildSite(base);
+
+  assert.deepEqual(selected, base);
+  assert.equal(analysis.ok, true);
+  assert.equal(analysis.partial, true);
+  assert.equal(analysis.remembered, true);
+});
+
+test("buildStarterShelter resumes partial shell without replacing completed blocks", async () => {
+  const base = new Vec3(4, 64, 4);
+  const placedKeys = new Set();
+  const placedDuringBuild = [];
+  let persisted = 0;
+  const controller = createController({
+    craftPlanks: async () => true,
+    craftDoor: async () => true,
+    nearestReactiveHostile: () => null,
+    startTaskTraceHeartbeat: () => null,
+    installStarterShelterDoor: async () => true,
+    furnishStarterShelter: async () => ({ craftingTable: true, furnace: true, chest: true, torch: true, bed: false, essentials: true }),
+    persistMemory: () => {
+      persisted++;
+      return true;
+    },
+    placeBlockAt: async (position) => {
+      placedDuringBuild.push(positionKey(position));
+      placedKeys.add(positionKey(position));
+      return true;
+    }
+  });
+  const plan = controller.createStarterShelterPlan(base);
+  for (const position of plan.slice(0, 10)) placedKeys.add(positionKey(position));
+  controller.bot = {
+    entity: { position: base },
+    inventory: { items: () => [{ name: "dirt", count: 128 }] },
+    equip: async () => {},
+    blockAt: (position) => {
+      if (placedKeys.has(positionKey(position))) return { name: "dirt", position, boundingBox: "block" };
+      if (position.y === 63) return { name: "grass_block", position, boundingBox: "block" };
+      return { name: "air", position, boundingBox: "empty" };
+    }
+  };
+
+  const built = await controller.buildStarterShelter();
+
+  assert.equal(built, true);
+  assert.equal(placedDuringBuild.length, plan.length - 10);
+  assert.equal(plan.slice(0, 10).some((position) => placedDuringBuild.includes(positionKey(position))), false);
+  assert.deepEqual(controller.progressState.starterShelterPosition, { x: base.x, y: base.y, z: base.z });
+  assert.equal(controller.progressState.hasStarterShelter, true);
+  assert.equal(persisted >= 2, true);
+});
+
 test("installStarterShelterDoor replaces a sealed doorway with an actual door", async () => {
   const base = new Vec3(10, 70, 10);
   const lowerLeft = base.offset(0, 0, -3);
@@ -1349,6 +1527,34 @@ test("ensureEmergencyShelterExit creates a fixed doorway in old sealed emergency
   assert.equal(opened, true);
   assert.deepEqual(dug, ["0,64,-1", "0,65,-1"]);
   assert.equal(installedDoor, false);
+});
+
+test("ensureEmergencyShelterExit opens toward the pending movement target", async () => {
+  const base = new Vec3(0, 64, 0);
+  const shellKeys = new Set(controllerShellKeys(base));
+  const dug = [];
+  const controller = createController({
+    isNight: () => false,
+    nearestEntity: () => null,
+    digBlockAt: async (position) => {
+      dug.push(`${position.x},${position.y},${position.z}`);
+      return true;
+    }
+  });
+  controller.bot = {
+    entity: { position: base },
+    blockAt: (position) => {
+      const key = `${position.x},${position.y},${position.z}`;
+      if (shellKeys.has(key)) return { name: "spruce_planks", position, boundingBox: "block", diggable: true };
+      if (position.y === 63) return { name: "grass_block", position, boundingBox: "block" };
+      return { name: "air", position, boundingBox: "empty" };
+    }
+  };
+
+  const opened = await controller.ensureEmergencyShelterExit(new Vec3(12, 64, 0));
+
+  assert.equal(opened, true);
+  assert.deepEqual(dug, ["1,64,0", "1,65,0"]);
 });
 
 test("ensureEmergencyShelterExit opens only an installed emergency shelter door", async () => {
@@ -1597,10 +1803,12 @@ test("recoverFromStarvation retreats from night hostile pressure before foraging
   assert.equal(foraged, false);
 });
 
-test("holdPositionSafely retreats from open-night hostile pressure", async () => {
+test("holdPositionSafely holds distant open-night hostile pressure", async () => {
+  const originalNow = Date.now;
+  let now = 0;
   const hostile = { id: 11, name: "zombie", position: new Vec3(24, 64, 0) };
   let retreatedFrom = null;
-  let waited = false;
+  let waitCount = 0;
   const controller = createController({
     config: {
       memory: { enabled: false, knownBlockSearchRadius: 96 },
@@ -1620,7 +1828,8 @@ test("holdPositionSafely retreats from open-night hostile pressure", async () =>
       return true;
     },
     wait: async () => {
-      waited = true;
+      waitCount++;
+      now += 1000;
     }
   });
   controller.bot = {
@@ -1632,10 +1841,15 @@ test("holdPositionSafely retreats from open-night hostile pressure", async () =>
     pvp: { stop() {} }
   };
 
-  await controller.holdPositionSafely();
+  Date.now = () => now;
+  try {
+    await controller.holdPositionSafely();
+  } finally {
+    Date.now = originalNow;
+  }
 
-  assert.equal(retreatedFrom, hostile);
-  assert.equal(waited, false);
+  assert.equal(retreatedFrom, null);
+  assert.equal(waitCount > 0, true);
 });
 
 test("starvation damage does not trigger unknown damage reposition", async () => {
@@ -2301,6 +2515,154 @@ test("collectBlocks treats timeout with inventory gain as collected", async () =
   assert.deepEqual(result, { collected: true, interruptedByThreat: false });
 });
 
+test("collectBlocks heartbeats task trace during long collectBlock calls", async () => {
+  const logPosition = new Vec3(2, 64, 0);
+  const logBlock = { name: "oak_log", position: logPosition, diggable: true };
+  let items = [];
+  const controller = createController({
+    rankMineableBlocks: () => [logBlock],
+    equipToolForBlock: async () => {},
+    collectNearbyItems: async () => false,
+    nearestEntity: () => null,
+    findNearbyDamagingBlock: () => null,
+    didAnyTargetBlockChange: () => true,
+    publishTaskTrace: () => {}
+  });
+  controller.taskTrace = {
+    status: "running",
+    taskType: "collect_wood",
+    updatedAt: new Date(Date.now() - 60000).toISOString(),
+    activePhaseId: "act",
+    phaseEvents: [{ id: "act", label: "collect", status: "active", at: new Date(Date.now() - 60000).toISOString(), details: {} }],
+    observations: []
+  };
+  const beforeUpdatedAt = controller.taskTrace.updatedAt;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    heldItem: null,
+    inventory: { items: () => items },
+    findBlocks: () => [logPosition],
+    blockAt: () => logBlock,
+    collectBlock: {
+      collect: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        items = [{ name: "oak_log", count: 1 }];
+      }
+    }
+  };
+
+  const result = await controller.collectBlocks(["oak_log"], 1, 16, { action: "collect_wood", traceHeartbeatMs: 5 });
+
+  assert.equal(result.collected, true);
+  assert.notEqual(controller.taskTrace.updatedAt, beforeUpdatedAt);
+  assert.equal(controller.taskTrace.phaseEvents[0].details.mode, "collect_blocks");
+});
+
+test("collectBlocks ignores distant daylight hostiles during collection", async () => {
+  const logPosition = new Vec3(2, 64, 0);
+  const logBlock = { name: "oak_log", position: logPosition, diggable: true };
+  const botEntity = { position: new Vec3(0, 64, 0) };
+  let items = [];
+  let retreated = false;
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1200,
+        placeBlockTimeoutMs: 1000,
+        threatRadius: 20,
+        safeModeThreatRadius: 28,
+        immediateThreatRadius: 8,
+        daylightThreatRadius: 10,
+        panicRetreatMs: 500
+      }
+    },
+    rankMineableBlocks: () => [logBlock],
+    equipToolForBlock: async () => {},
+    collectNearbyItems: async () => false,
+    findNearbyDamagingBlock: () => null,
+    didAnyTargetBlockChange: () => false,
+    panicRetreatFrom: async () => {
+      retreated = true;
+      return false;
+    }
+  });
+  controller.bot = {
+    entity: botEntity,
+    entities: {
+      self: botEntity,
+      creeper: { name: "creeper", position: new Vec3(16, 64, 0) }
+    },
+    time: { timeOfDay: 7000 },
+    heldItem: null,
+    inventory: { items: () => items },
+    findBlocks: () => [logPosition],
+    blockAt: () => logBlock,
+    collectBlock: {
+      collect: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 650));
+        items = [{ name: "oak_log", count: 1 }];
+      },
+      cancelTask: async () => {}
+    }
+  };
+
+  const result = await controller.collectBlocks(["oak_log"], 1, 16, { action: "collect_wood" });
+
+  assert.deepEqual(result, { collected: true, interruptedByThreat: false });
+  assert.equal(retreated, false);
+});
+
+test("collectBlocks still interrupts nearby daylight hostiles", async () => {
+  const logPosition = new Vec3(2, 64, 0);
+  const logBlock = { name: "oak_log", position: logPosition, diggable: true };
+  const botEntity = { position: new Vec3(0, 64, 0) };
+  let retreatedFrom = null;
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1200,
+        placeBlockTimeoutMs: 1000,
+        threatRadius: 20,
+        safeModeThreatRadius: 28,
+        immediateThreatRadius: 8,
+        daylightThreatRadius: 10,
+        panicRetreatMs: 500
+      }
+    },
+    rankMineableBlocks: () => [logBlock],
+    equipToolForBlock: async () => {},
+    collectNearbyItems: async () => false,
+    findNearbyDamagingBlock: () => null,
+    panicRetreatFrom: async (threat) => {
+      retreatedFrom = threat.name;
+      return false;
+    }
+  });
+  controller.bot = {
+    entity: botEntity,
+    entities: {
+      self: botEntity,
+      creeper: { name: "creeper", position: new Vec3(7, 64, 0) }
+    },
+    time: { timeOfDay: 7000 },
+    heldItem: null,
+    inventory: { items: () => [] },
+    findBlocks: () => [logPosition],
+    blockAt: () => logBlock,
+    collectBlock: {
+      collect: () => new Promise(() => {}),
+      cancelTask: async () => {}
+    }
+  };
+
+  const result = await controller.collectBlocks(["oak_log"], 1, 16, { action: "collect_wood" });
+
+  assert.deepEqual(result, { collected: false, interruptedByThreat: true });
+  assert.equal(retreatedFrom, "creeper");
+});
+
 test("collectWood repeats partial trunk collection until enough logs are gathered", async () => {
   let logCount = 0;
   let collectCalls = 0;
@@ -2313,6 +2675,7 @@ test("collectWood repeats partial trunk collection until enough logs are gathere
       assert.equal(maxDistance, 64);
       assert.equal(options.lowestPerColumn, true);
       assert.equal(options.maxTargetAbove, 5);
+      assert.equal(options.maxStandAbove, 2);
       logCount += Math.min(2, count);
       return { collected: true, interruptedByThreat: false };
     },
@@ -2371,6 +2734,229 @@ test("collectStone repeats partial stone collection at the current worksite", as
   assert.equal(collectCounts[1].options.surfaceOnly, false);
   assert.equal(stoneCount, 5);
   assert.equal(explored, false);
+});
+
+test("collectStone heartbeats task trace while probing for surface stone", async () => {
+  const controller = createController({
+    equipBestTool: async () => {},
+    collectBlocks: async () => ({ collected: false, interruptedByThreat: false }),
+    collectNearbyItems: async () => false,
+    exploreForSurfaceStone: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return false;
+    },
+    publishTaskTrace: () => {}
+  });
+  controller.config.survival.taskTraceHeartbeatMs = 5;
+  controller.taskTrace = {
+    status: "running",
+    taskType: "collect_stone",
+    updatedAt: new Date(Date.now() - 60000).toISOString(),
+    activePhaseId: "act",
+    phaseEvents: [{ id: "act", label: "collect", status: "active", at: new Date(Date.now() - 60000).toISOString(), details: {} }],
+    observations: []
+  };
+  const beforeUpdatedAt = controller.taskTrace.updatedAt;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [{ name: "wooden_pickaxe", count: 1, slot: 36 }] }
+  };
+
+  await controller.collectStone({ constructorArgs: { count: 3, searchRadius: 24 } });
+
+  assert.notEqual(controller.taskTrace.updatedAt, beforeUpdatedAt);
+  assert.equal(controller.taskTrace.phaseEvents[0].details.action, "collect_stone");
+});
+
+test("waitOutNight heartbeats task trace while sheltering and holding", async () => {
+  const heartbeatCalls = [];
+  const controller = createController({
+    publishTaskTrace: () => {},
+    hasUsableStarterShelterAt: () => false,
+    starterShelterBase: () => null,
+    buildSimpleShelter: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return false;
+    },
+    holdPositionSafely: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  });
+  const originalStartHeartbeat = controller.startTaskTraceHeartbeat;
+  controller.startTaskTraceHeartbeat = function startTaskTraceHeartbeatSpy(details, intervalMs) {
+    heartbeatCalls.push({ details, intervalMs });
+    return originalStartHeartbeat.call(this, details, intervalMs);
+  };
+  controller.config.survival.taskTraceHeartbeatMs = 5;
+  controller.taskTrace = {
+    status: "running",
+    taskType: "wait_out_night",
+    updatedAt: new Date(Date.now() - 60000).toISOString(),
+    activePhaseId: "act",
+    phaseEvents: [{ id: "act", label: "wait", status: "active", at: new Date(Date.now() - 60000).toISOString(), details: {} }],
+    observations: []
+  };
+  const beforeUpdatedAt = controller.taskTrace.updatedAt;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    time: { timeOfDay: 18000 }
+  };
+
+  await controller.waitOutNight();
+
+  assert.notEqual(controller.taskTrace.updatedAt, beforeUpdatedAt);
+  assert.equal(controller.taskTrace.phaseEvents[0].details.action, "wait_out_night");
+  assert.deepEqual(heartbeatCalls.map((call) => call.details.action), ["wait_out_night"]);
+});
+
+test("buildSimpleShelter heartbeats task trace during slow placement", async () => {
+  const heartbeatCalls = [];
+  let placeCalls = 0;
+  const controller = createController({
+    publishTaskTrace: () => {},
+    placeBuildingBlockAt: async () => {
+      placeCalls++;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { placed: false, completed: false };
+    }
+  });
+  const originalStartHeartbeat = controller.startTaskTraceHeartbeat;
+  controller.startTaskTraceHeartbeat = function startTaskTraceHeartbeatSpy(details, intervalMs) {
+    heartbeatCalls.push({ details, intervalMs });
+    return originalStartHeartbeat.call(this, details, intervalMs);
+  };
+  controller.config.survival.taskTraceHeartbeatMs = 5;
+  controller.taskTrace = {
+    status: "running",
+    taskType: "wait_out_night",
+    updatedAt: new Date(Date.now() - 60000).toISOString(),
+    activePhaseId: "act",
+    phaseEvents: [{ id: "act", label: "shelter", status: "active", at: new Date(Date.now() - 60000).toISOString(), details: {} }],
+    observations: []
+  };
+  const beforeUpdatedAt = controller.taskTrace.updatedAt;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    equip: async () => {},
+    inventory: { items: () => (placeCalls === 0 ? [{ name: "dirt", count: 1, slot: 36 }] : []) },
+    blockAt: () => ({ name: "air", boundingBox: "empty" })
+  };
+
+  const result = await controller.buildSimpleShelter();
+
+  assert.equal(result, false);
+  assert.equal(placeCalls, 1);
+  assert.notEqual(controller.taskTrace.updatedAt, beforeUpdatedAt);
+  assert.equal(controller.taskTrace.phaseEvents[0].details.action, "build_simple_shelter");
+  assert.deepEqual(heartbeatCalls.map((call) => call.details.action), ["build_simple_shelter"]);
+});
+
+test("buildStarterShelter heartbeats task trace during slow house placement", async () => {
+  const heartbeatCalls = [];
+  let placeCalls = 0;
+  const base = new Vec3(0, 64, 0);
+  const controller = createController({
+    publishTaskTrace: () => {},
+    findStarterShelterBuildBase: () => base,
+    craftPlanks: async () => {},
+    craftDoor: async () => {},
+    createStarterShelterPlan: () => [new Vec3(1, 64, 0), new Vec3(2, 64, 0)],
+    placeBuildingBlockAt: async () => {
+      placeCalls++;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      return { placed: true, completed: true };
+    },
+    installStarterShelterDoor: async () => false,
+    furnishStarterShelter: async () => ({ essentials: false })
+  });
+  const originalStartHeartbeat = controller.startTaskTraceHeartbeat;
+  controller.startTaskTraceHeartbeat = function startTaskTraceHeartbeatSpy(details, intervalMs) {
+    heartbeatCalls.push({ details, intervalMs });
+    return originalStartHeartbeat.call(this, details, intervalMs);
+  };
+  controller.config.survival.taskTraceHeartbeatMs = 5;
+  controller.taskTrace = {
+    status: "running",
+    taskType: "build_shelter",
+    updatedAt: new Date(Date.now() - 60000).toISOString(),
+    activePhaseId: "act",
+    phaseEvents: [{ id: "act", label: "build", status: "active", at: new Date(Date.now() - 60000).toISOString(), details: {} }],
+    observations: []
+  };
+  const beforeUpdatedAt = controller.taskTrace.updatedAt;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: {},
+    time: { timeOfDay: 9000 },
+    inventory: { items: () => [{ name: "dirt", count: 64, slot: 36 }] }
+  };
+
+  const result = await controller.buildStarterShelter();
+
+  assert.equal(result, false);
+  assert.equal(placeCalls, 2);
+  assert.notEqual(controller.taskTrace.updatedAt, beforeUpdatedAt);
+  assert.equal(controller.taskTrace.phaseEvents[0].details.action, "build_starter_shelter");
+  assert.deepEqual(heartbeatCalls.map((call) => call.details.action), ["build_starter_shelter"]);
+});
+
+test("collectStone bounds a hung item pickup after successful collection", async () => {
+  let stoneCount = 0;
+  let pickupStarted = false;
+  const controller = createController({
+    equipBestTool: async () => {},
+    collectBlocks: async () => {
+      stoneCount = 3;
+      return { collected: true, interruptedByThreat: false };
+    },
+    collectNearbyItems: async () => {
+      pickupStarted = true;
+      return new Promise(() => {});
+    },
+    exploreForSurfaceStone: async () => {
+      assert.fail("surface probing should not run after collecting enough stone");
+      return false;
+    }
+  });
+  controller.config.survival.actionTimeoutMs = 60;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    clearControlStates() {},
+    pathfinder: { setGoal() {} },
+    inventory: { items: () => [{ name: "wooden_pickaxe", count: 1, slot: 36 }, ...(stoneCount ? [{ name: "cobblestone", count: stoneCount, slot: 37 }] : [])] }
+  };
+
+  const result = await controller.collectStone({ constructorArgs: { count: 3, searchRadius: 24 } });
+
+  assert.equal(result, true);
+  assert.equal(pickupStarted, true);
+});
+
+test("collectStone skips item pickup when no stone was collected", async () => {
+  let pickupStarted = false;
+  let probedSurface = false;
+  const controller = createController({
+    equipBestTool: async () => {},
+    collectBlocks: async () => ({ collected: false, interruptedByThreat: false }),
+    collectNearbyItems: async () => {
+      pickupStarted = true;
+      return false;
+    },
+    exploreForSurfaceStone: async () => {
+      probedSurface = true;
+      return false;
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [{ name: "wooden_pickaxe", count: 1, slot: 36 }] }
+  };
+
+  const result = await controller.collectStone({ constructorArgs: { count: 3, searchRadius: 24 } });
+
+  assert.equal(result, false);
+  assert.equal(pickupStarted, false);
+  assert.equal(probedSurface, true);
 });
 
 test("collectWood approaches a safe ground stand for elevated target logs", async () => {
@@ -2486,7 +3072,6 @@ test("collectWood approaches remembered forest logs before generic exploration",
     ensureWoodcuttingTool: async () => true,
     collectBlocks: async () => {
       collectCalls++;
-      if (collectCalls === 1) return { collected: false, interruptedByThreat: false };
       logCount = 4;
       return { collected: true, interruptedByThreat: false };
     },
@@ -2515,12 +3100,63 @@ test("collectWood approaches remembered forest logs before generic exploration",
   const result = await controller.collectWood();
 
   assert.equal(result, true);
-  assert.equal(collectCalls, 2);
+  assert.equal(collectCalls, 1);
   assert.equal(explored, false);
   assert.deepEqual({ x: gotoCall.x, y: gotoCall.y, z: gotoCall.z, range: gotoCall.range }, { x: 23, y: 64, z: 18, range: 3 });
   assert.equal(gotoCall.options.label, "collect_wood_known_log");
   assert.equal(gotoCall.options.target, "known_log_area");
   assert.equal(gotoCall.options.taskFeedback, false);
+});
+
+test("collectWood uses regional tree scan memory before random exploration", async () => {
+  let logCount = 0;
+  let gotoCall = null;
+  let explored = false;
+  const treeSurface = new Vec3(40, 65, -20);
+  const controller = createController({
+    ensureWoodcuttingTool: async () => true,
+    collectBlocks: async () => {
+      logCount = 4;
+      return { collected: true, interruptedByThreat: false };
+    },
+    gotoNear: async (x, y, z, range, options) => {
+      gotoCall = { x, y, z, range, options };
+      controller.bot.entity.position = new Vec3(x, y, z);
+      return true;
+    },
+    collectWoodTargetApproach: (position) => ({ position, range: 6, target: "known_log_area" }),
+    explore: async () => {
+      explored = true;
+      return false;
+    }
+  });
+  controller.memory.exploration = {
+    coarseCells: {
+      "overworld:40:-20": {
+        dimension: "overworld",
+        position: { x: treeSurface.x, y: treeSurface.y, z: treeSurface.z },
+        topBlock: "oak_leaves",
+        tree: true,
+        water: false,
+        hazard: false,
+        safeStand: true
+      }
+    }
+  };
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: {
+      items: () => (logCount > 0 ? [{ name: "oak_log", count: logCount }] : [])
+    }
+  };
+
+  const result = await controller.collectWood();
+
+  assert.equal(result, true);
+  assert.equal(explored, false);
+  assert.deepEqual({ x: gotoCall.x, y: gotoCall.y, z: gotoCall.z, range: gotoCall.range }, { x: 40, y: 66, z: -20, range: 6 });
+  assert.equal(gotoCall.options.label, "collect_wood_known_log");
+  assert.equal(gotoCall.options.target, "known_log_area");
 });
 
 test("collectStone consumes behavior tree constructor args", async () => {
@@ -2800,6 +3436,93 @@ test("explore expands its search when recovering from blocked food search", asyn
   assert.equal(target.range, 3);
 });
 
+test("food recovery explore prefers broad relocation before local shuffling", async () => {
+  let target = null;
+  const broadTarget = new Vec3(24, 64, 0);
+  const localStand = new Vec3(4, 64, 0);
+  const controller = createController({
+    isNight: () => false,
+    selectHuntFoodTarget: () => ({ animal: null }),
+    findNearbySafeStandPositions: () => [localStand],
+    findSafeExplorationTarget: () => broadTarget,
+    gotoNear: async (x, y, z, range, options) => {
+      target = { x, y, z, range, options };
+      return true;
+    }
+  });
+  controller.bot = {
+    food: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: () => ({ name: "grass_block", boundingBox: "block" })
+  };
+
+  const explored = await controller.explore({ blockedTask: "hunt_food", reason: "no_food_source_found" });
+
+  assert.equal(explored, true);
+  assert.equal(target.x, broadTarget.x);
+  assert.equal(target.z, broadTarget.z);
+  assert.equal(target.options.label, "food_recovery_explore");
+});
+
+test("food recovery explore skips visible food targets on unreachable cooldown", async () => {
+  let target = null;
+  const salmonPosition = new Vec3(12, 60, 0);
+  const safeTarget = new Vec3(0, 64, 16);
+  const controller = createController({
+    isNight: () => false,
+    selectHuntFoodTarget: () => ({ animal: { id: 1, name: "salmon", position: salmonPosition } }),
+    findSafeExplorationTarget: () => safeTarget,
+    gotoNear: async (x, y, z, range, options) => {
+      target = { x, y, z, range, options };
+      return true;
+    }
+  });
+  controller.bot = {
+    food: 5,
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+  controller._exploreUnreachableTargets = new Map([["12,60,0", {
+    position: salmonPosition,
+    reason: "target_unreachable_no_movement",
+    at: Date.now(),
+    expiresAt: Date.now() + 60000
+  }]]);
+
+  const explored = await controller.explore({ blockedTask: "hunt_food", reason: "local food search failed repeatedly" });
+
+  assert.equal(explored, true);
+  assert.deepEqual({ x: target.x, y: target.y, z: target.z }, { x: 0, y: 64, z: 16 });
+  assert.equal(target.options.label, "food_recovery_explore");
+  assert.equal(target.options.target, "food_recovery");
+});
+
+test("food recovery explore approaches aquatic food from a safe stand", async () => {
+  let target = null;
+  const salmonPosition = new Vec3(12, 60, 0);
+  const standPosition = new Vec3(10, 64, 1);
+  const controller = createController({
+    isNight: () => false,
+    selectHuntFoodTarget: () => ({ animal: { id: 1, name: "salmon", position: salmonPosition } }),
+    findNearbySafeStandPositions: () => [standPosition],
+    findSafeExplorationTarget: () => new Vec3(0, 64, 16),
+    gotoNear: async (x, y, z, range, options) => {
+      target = { x, y, z, range, options };
+      return true;
+    }
+  });
+  controller.bot = {
+    food: 5,
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+
+  const explored = await controller.explore({ blockedTask: "hunt_food", reason: "local food search failed repeatedly" });
+
+  assert.equal(explored, true);
+  assert.deepEqual({ x: target.x, y: target.y, z: target.z }, { x: 10, y: 64, z: 1 });
+  assert.equal(target.options.label, "food_source_recovery_explore");
+  assert.equal(target.options.target, "salmon");
+});
+
 test("explore contracts recovery targets after exploration is blocked", async () => {
   let targetOptions = null;
   const safeTarget = new Vec3(8, 64, 0);
@@ -2936,7 +3659,7 @@ test("evadeHostiles uses a short retreat window before fighting close threats", 
         evadeDistance: 24
       }
     },
-    nearestEntity: () => hostile,
+    nearestEntity: (_predicate, radius) => hostile.position.distanceTo(controller.bot.entity.position) <= radius ? hostile : null,
     panicRetreatFrom: async (target, durationMs, options) => {
       retreatCall = { target, durationMs, options };
       controller.bot.entity.position = new Vec3(7, 64, 0);
@@ -2958,6 +3681,47 @@ test("evadeHostiles uses a short retreat window before fighting close threats", 
   assert.equal(retreatCall.durationMs, 1200);
   assert.equal(retreatCall.options.maxPathTimeoutMs, 1200);
   assert.equal(defended, hostile);
+});
+
+test("evadeHostiles does not chase a far retreat target when night pressure is not immediate", async () => {
+  const hostile = { id: 1, name: "spider", position: new Vec3(20, 64, 0) };
+  let retreatCall = null;
+  let farGotoCalled = false;
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1000,
+        placeBlockTimeoutMs: 1000,
+        threatRadius: 20,
+        safeModeThreatRadius: 28,
+        immediateThreatRadius: 8,
+        criticalHealth: 8,
+        panicRetreatMs: 3500,
+        evadeDistance: 24
+      }
+    },
+    nearestEntity: (_predicate, radius) => hostile.position.distanceTo(controller.bot.entity.position) <= radius ? hostile : null,
+    panicRetreatFrom: async (target, durationMs, options) => {
+      retreatCall = { target, durationMs, options };
+      return false;
+    },
+    gotoNear: async () => {
+      farGotoCalled = true;
+      return false;
+    }
+  });
+  controller.bot = {
+    health: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [] }
+  };
+
+  const result = await controller.evadeHostiles();
+
+  assert.equal(result, true);
+  assert.equal(retreatCall, null);
+  assert.equal(farGotoCalled, false);
 });
 
 test("holdPositionSafely seals shelter blocks instead of retreating from distant night pressure", async () => {
@@ -3360,4 +4124,139 @@ test("test task pipeline can be consumed when it matches active hard safety", ()
   assert.equal(decision.type, "escape_hazard");
   assert.equal(decision.testQueued, true);
   assert.equal(decision.source, "test_pipeline");
+});
+
+test("collectBlocks can use manual-only collection for safe log stands", async () => {
+  const logPosition = new Vec3(2, 64, 0);
+  const logBlock = { name: "oak_log", position: logPosition, diggable: true };
+  let usedManual = false;
+  let pluginCalled = false;
+  const controller = createController({
+    rankMineableBlocks: () => [logBlock],
+    equipToolForBlock: async () => {},
+    collectBlocksManually: async (blocks, count, options) => {
+      usedManual = true;
+      assert.equal(blocks[0], logBlock);
+      assert.equal(count, 1);
+      assert.equal(options.manualOnly, true);
+      return { collected: true, interruptedByThreat: false };
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    findBlocks: () => [logPosition],
+    blockAt: () => logBlock,
+    collectBlock: { collect: async () => { pluginCalled = true; } }
+  };
+
+  const result = await controller.collectBlocks(["oak_log"], 1, 16, { action: "collect_wood", manualOnly: true });
+
+  assert.equal(result.collected, true);
+  assert.equal(usedManual, true);
+  assert.equal(pluginCalled, false);
+});
+
+test("collectStone leaves a stalled remembered worksite and probes for surface stone", async () => {
+  const collectOptions = [];
+  let explored = false;
+  const controller = createController({
+    equipBestTool: async () => {},
+    collectBlocks: async (_blocks, _count, _radius, options) => {
+      collectOptions.push(options);
+      return { collected: false, interruptedByThreat: false };
+    },
+    excavateMineProbe: async () => ({ dug: 0, moved: 0 }),
+    exploreForSurfaceStone: async () => {
+      explored = true;
+      return false;
+    }
+  });
+  controller.lastStoneWorksitePosition = new Vec3(0, 64, 0);
+  controller.lastStoneWorksiteUntil = Date.now() + 60000;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [{ name: "wooden_pickaxe", count: 1, slot: 36 }] },
+    clearControlStates() {},
+    pathfinder: { setGoal() {} }
+  };
+
+  const result = await controller.collectStone({ constructorArgs: { count: 3, searchRadius: 24 } });
+
+  assert.equal(result, false);
+  assert.equal(collectOptions[0].maxMineBelow, 2);
+  assert.equal(explored, true);
+  assert.equal(controller.lastStoneWorksiteUntil, 0);
+});
+
+test("knownLogTargets skips loaded logs without a reachable dig stand", () => {
+  const highLog = new Vec3(10, 70, 0);
+  const reachableLog = new Vec3(12, 64, 0);
+  const controller = createController({
+    hasReachableDigStand: (block) => block.position.y <= 64,
+    recordActionFailure: () => {}
+  });
+  controller.memory.knownBlocks.spruce_log = [
+    { position: highLog, dimension: "overworld" },
+    { position: reachableLog, dimension: "overworld" }
+  ];
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: (position) => ({ name: "spruce_log", position })
+  };
+
+  const targets = controller.knownLogTargets(controller.bot.entity.position, 128);
+
+  assert.equal(targets.length, 1);
+  assert.deepEqual(targets[0].position, reachableLog);
+});
+
+test("reachable dig stand respects vertical stand limit", () => {
+  const block = { name: "spruce_log", position: new Vec3(0, 66, 0), boundingBox: "block" };
+  const controller = createController({
+    findSafeMiningStandPositions: () => [new Vec3(0, 69, 1)],
+    findSafeAdjacentStandPositions: () => []
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+
+  assert.equal(controller.hasReachableDigStand(block), true);
+  assert.equal(controller.hasReachableDigStand(block, { maxStandAbove: 2 }), false);
+});
+
+test("evadeHostiles fights close armed melee threats before wasting time on retreat", async () => {
+  const hostile = { id: 1, name: "zombie", position: new Vec3(6, 64, 0) };
+  let retreated = false;
+  let defended = null;
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        threatRadius: 20,
+        safeModeThreatRadius: 28,
+        immediateThreatRadius: 8,
+        criticalHealth: 8,
+        panicRetreatMs: 3500,
+        evadeDistance: 24
+      }
+    },
+    nearestEntity: () => hostile,
+    panicRetreatFrom: async () => {
+      retreated = true;
+      return false;
+    },
+    defendSelf: async (target) => {
+      defended = target;
+    }
+  });
+  controller.bot = {
+    health: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [{ name: "stone_sword", count: 1 }] }
+  };
+
+  await controller.evadeHostiles();
+
+  assert.equal(defended, hostile);
+  assert.equal(retreated, false);
 });

@@ -226,12 +226,35 @@ function createPlannerToolRegistry(baseRegistry = createDefaultToolRegistry()) {
       return {
         bot: plannerContext.bot ?? null,
         world: plannerContext.world ?? null,
+        compactState: plannerContext.compactState ?? null,
         currentRuleDecision: plannerContext.currentRuleDecision ?? null,
         currentSkillPlan: plannerContext.currentSkillPlan ?? null,
         controller: plannerContext.controller ?? null,
         nearbyEntities: plannerContext.nearbyEntities ?? []
       };
     }
+  });
+
+  addIfMissing({
+    id: "query_compact_state",
+    summary: "Return the Mindcraft-style compact full_state payload for quick planning.",
+    parameters: {},
+    schema: { type: "object", properties: {}, additionalProperties: false },
+    tags: ["context", "status", "compact_state"],
+    handler: (_params, context = {}) => context.plannerContext?.compactState ?? null
+  });
+
+  addIfMissing({
+    id: "query_task_parameter_knowledge",
+    summary: "Return allowed behavior-tree task classes, constructor argument hints, and the translated Mindcraft command/skill catalog.",
+    parameters: {},
+    schema: { type: "object", properties: {}, additionalProperties: false },
+    tags: ["context", "tasks", "parameters"],
+    handler: (_params, context = {}) => ({
+      allowedTasks: context.plannerContext?.allowedTasks ?? [],
+      taskTreeClasses: context.plannerContext?.taskTreeClasses ?? [],
+      taskParameterKnowledge: context.plannerContext?.taskParameterKnowledge ?? null
+    })
   });
 
   addIfMissing({

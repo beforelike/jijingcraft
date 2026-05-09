@@ -5,6 +5,7 @@ function createDefaultProgress() {
   return {
     hasStarterShelter: false,
     starterShelterPosition: null,
+    starterShelterDesignSpec: null,
     hasCropPlot: false,
     plantedCrops: 0,
     hasAnimalPen: false,

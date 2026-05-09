@@ -1,5 +1,6 @@
 const { listAllowedTasks, listSurvivalSkills } = require("../knowledge/survivalSkills");
 const { compactMinecraftSurvivalGuide } = require("../knowledge/minecraftSurvivalGuide");
+const { compactMindcraftTaskKnowledge, taskParameterHintsForTask } = require("../knowledge/mindcraftTaskKnowledge");
 const { compactResearchMissionCatalog } = require("../knowledge/researchMissionCatalog");
 const { taskFunctionName, taskLevel, taskParameterSchema, taskPriority, taskTreeClassName } = require("../behavior/executableBehaviorTree");
 
@@ -24,6 +25,51 @@ function topInventoryItems(inventory = {}, limit = 20) {
     .sort((left, right) => Number(right[1]) - Number(left[1]) || left[0].localeCompare(right[0]))
     .slice(0, limit)
     .map(([name, count]) => ({ name, count: Number(count) }));
+}
+
+const GENERAL_AGENT_BLOCKED_TASKS = new Set([
+  "escape_hazard",
+  "escape_pit",
+  "descend_from_platform",
+  "evade_hostiles",
+  "defend_shelter",
+  "defend_self",
+  "eat_food",
+  "recover_starvation"
+]);
+
+function listGeneralAgentAllowedTasks(taskTypes = listAllowedTasks()) {
+  return taskTypes.filter((taskType) => !GENERAL_AGENT_BLOCKED_TASKS.has(taskType));
+}
+
+function listLocalRuleManagedTasks(taskTypes = listAllowedTasks()) {
+  return taskTypes.filter((taskType) => GENERAL_AGENT_BLOCKED_TASKS.has(taskType));
+}
+
+function isGeneralAgentBlockedTask(taskType) {
+  return GENERAL_AGENT_BLOCKED_TASKS.has(taskType);
+}
+
+function isOxygenRelevant(snapshot = {}) {
+  if (!snapshot || snapshot.oxygen === undefined || snapshot.oxygen === null) return false;
+  const oxygen = Number(snapshot.oxygen);
+  if (!Number.isFinite(oxygen)) return false;
+  if (Boolean(snapshot.isBodyInWater) || Boolean(snapshot.isInWater) || Boolean(snapshot.isHeadInWater)) return true;
+  if (oxygen <= 18) return true;
+  const navigationKind = snapshot.navigationAnalysis?.kind;
+  return navigationKind === "water_column" || navigationKind === "underwater";
+}
+
+function maybeOxygenField(snapshot = {}) {
+  return isOxygenRelevant(snapshot) ? { oxygen: Number(snapshot.oxygen) } : {};
+}
+
+function inventoryTotals(inventory = {}) {
+  const entries = Object.entries(inventory).filter(([, count]) => Number(count) > 0);
+  return {
+    totalKinds: entries.length,
+    totalItems: entries.reduce((sum, [, count]) => sum + (Number(count) || 0), 0)
+  };
 }
 
 function nearbyEntitySummary(entities = [], limit = 12) {
@@ -70,6 +116,7 @@ function terrainSummary(terrain = null) {
         position: positionSummary(cell.position),
         ground: cell.ground ?? null,
         feet: cell.feet ?? null,
+        head: cell.head ?? null,
         safeStand: Boolean(cell.safeStand),
         water: Boolean(cell.water),
         hazard: Boolean(cell.hazard)
@@ -230,6 +277,44 @@ function botPerspectiveSummary(view = null) {
   };
 }
 
+function timeLabelFromTimeOfDay(timeOfDay) {
+  const value = Number(timeOfDay);
+  if (!Number.isFinite(value)) return "unknown";
+  if (value < 6000) return "morning";
+  if (value < 12000) return "afternoon";
+  return "night";
+}
+
+function compactEntityTypes(entities = []) {
+  const counts = new Map();
+  for (const entity of entities ?? []) {
+    if (!entity?.name) continue;
+    counts.set(entity.name, (counts.get(entity.name) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, 12)
+    .map(([name, count]) => ({ name, count }));
+}
+
+function surroundingsSummary(terrain = null, botPerspective = null) {
+  const centerCell = terrain?.exactLocal?.cells?.find((cell) => Number(cell.dx) === 0 && Number(cell.dz) === 0) ?? null;
+  const firstSolidAhead = (botPerspective?.frontBlocks ?? []).find((block) => block.solid && block.name !== "air") ?? null;
+  return {
+    below: centerCell?.ground ?? null,
+    legs: centerCell?.feet ?? null,
+    head: centerCell?.head ?? null,
+    firstSolidAhead: firstSolidAhead ? {
+      name: firstSolidAhead.name,
+      distance: Number(firstSolidAhead.distance) || 0,
+      position: positionSummary(firstSolidAhead.position)
+    } : null,
+    safeStandCount: Number(terrain?.safeStandCount) || 0,
+    waterSamples: Number(terrain?.waterSamples) || 0,
+    hazardSamples: Number(terrain?.damagingSamples) || 0
+  };
+}
+
 function actionSummary(controller = {}) {
   const summary = controller?.actionSummary ?? null;
   if (!summary || typeof summary !== "object") return null;
@@ -265,6 +350,29 @@ function behaviorLogSummary(controller = {}, limit = 10) {
         target: event.details.target ?? null,
         position: positionSummary(event.details.position),
         failedTarget: positionSummary(event.details.failedTarget)
+      } : null
+    }))
+    : [];
+}
+
+function modeLogSummary(controller = {}, limit = 12) {
+  return Array.isArray(controller?.modeLog)
+    ? controller.modeLog.slice(-limit).map((event) => ({
+      at: event.at ?? null,
+      level: event.level ?? "info",
+      mode: event.mode ?? "local",
+      event: event.event ?? "event",
+      taskType: event.taskType ?? null,
+      ruleDecision: event.ruleDecision ?? null,
+      reason: event.reason ?? null,
+      outcome: event.outcome ?? null,
+      details: event.details && typeof event.details === "object" ? {
+        queue: event.details.queue ?? null,
+        queuedTask: event.details.queuedTask ?? null,
+        interruptedQueues: event.details.interruptedQueues ?? null,
+        health: event.details.health ?? null,
+        food: event.details.food ?? null,
+        position: positionSummary(event.details.position)
       } : null
     }))
     : [];
@@ -341,11 +449,71 @@ function taskClassSummary(taskTypes = listAllowedTasks()) {
     taskFunction: taskFunctionName(taskType),
     priority: taskPriority(taskType),
     level: taskLevel(taskType),
-    constructorSchema: taskParameterSchema(taskType)
+    constructorSchema: taskParameterSchema(taskType),
+    parameterHints: taskParameterHintsForTask(taskType)
   }));
 }
 
+function compactFullStateSummary({ snapshot, progress, memory, decision, dimension, controller, terrain, botPerspective, action } = {}) {
+  const inventory = snapshot?.inventory ?? {};
+  const totals = inventoryTotals(inventory);
+  return {
+    gameplay: {
+      position: positionSummary(snapshot?.position),
+      dimension: dimension ?? "unknown",
+      health: snapshot?.health ?? null,
+      hunger: snapshot?.food ?? null,
+      ...maybeOxygenField(snapshot),
+      timeOfDay: snapshot?.timeOfDay ?? null,
+      timeLabel: timeLabelFromTimeOfDay(snapshot?.timeOfDay),
+      isNight: Boolean(snapshot?.isNight)
+    },
+    action: {
+      current: action?.currentTrace?.taskType ?? controller?.lastAction?.type ?? decision?.type ?? "idle",
+      isIdle: !controller?.busy && !controller?.emergencyBusy,
+      activePhase: action?.currentTrace?.activePhaseLabel ?? action?.currentTrace?.activePhaseId ?? null,
+      lastFeedback: action?.lastFeedback ?? null
+    },
+    surroundings: surroundingsSummary(terrain, botPerspective),
+    inventory: {
+      ...totals,
+      topItems: topInventoryItems(inventory, 12),
+      equipment: {
+        mainHand: snapshot?.heldItem ?? null
+      }
+    },
+    nearby: {
+      entityTypes: compactEntityTypes(snapshot?.entities),
+      closestEntities: nearbyEntitySummary(snapshot?.entities, 6)
+    },
+    modes: {
+      safetyRule: decision?.type ?? null,
+      queueActive: Boolean(controller?.behaviorQueue?.active || controller?.taskQueue?.active),
+      emergencyBusy: Boolean(controller?.emergencyBusy),
+      recentModeLog: modeLogSummary(controller, 6)
+    },
+    memory: {
+      knownBlockKinds: Object.keys(memory?.knownBlocks ?? {}).length,
+      recentLearningCount: Object.keys(memory?.learning?.policyStats ?? {}).length,
+      visitedCount: Array.isArray(memory?.exploration?.visited) ? memory.exploration.visited.length : 0
+    },
+    progress: progress ? {
+      stage: progress.stage ?? null,
+      summary: progress.summary ?? null,
+      next: progress.next ? { id: progress.next.id, label: progress.next.label } : null
+    } : null
+  };
+}
+
 function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelope, dimension, controller } = {}) {
+  const compactTerrain = terrainSummary(snapshot?.terrain);
+  const compactBotPerspective = botPerspectiveSummary(snapshot?.botPerspective);
+  const compactAction = actionSummary(controller);
+  const compactBehaviorLog = behaviorLogSummary(controller);
+  const compactModeLog = modeLogSummary(controller);
+  const compactExplorationStrategy = explorationStrategySummary(controller);
+  const generalAgentAllowedTasks = listGeneralAgentAllowedTasks();
+  const localRuleManagedTasks = listLocalRuleManagedTasks();
   return {
     purpose: "smart_brain_task_directive_planning",
     safetyRules: [
@@ -356,15 +524,28 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       "When taskFeedback reports a blocked task, propose a different safe task that can gather information, change location, or prepare prerequisites instead of repeating the blocked task.",
       "For early food, do an environment-aware choice: request explore if food sources are unknown; prefer nearby land food when safe; prefer mature berry bushes over aquatic fish only when local terrain/water/oxygen risk makes fish unsafe or berries are clearly the safer visible source.",
       "Use minecraftWiki.environmentRules and taskNotes: water with oxygen remaining is not a hazard, water columns are not escape pits, and dry-land tasks should first surface or find shore.",
-      "If terrain.descent.needsDescent is true, request descend_from_platform before collect_wood or other progression tasks.",
+      "Hard emergency tasks are local-rule/safety_agent managed; general_agent should not request localRuleManagedTasks directly.",
+      "If terrain.descent.needsDescent is true, avoid ordinary progression requests until local safety rules have completed descend_from_platform.",
       "Use researchMissions only as evaluation references for task requests and success criteria; never assume a mission can bypass live safety rules."
     ],
     minecraftWiki: compactMinecraftSurvivalGuide(),
     researchMissions: compactResearchMissionCatalog(),
+    taskParameterKnowledge: compactMindcraftTaskKnowledge(),
+    compactState: compactFullStateSummary({
+      snapshot,
+      progress,
+      memory,
+      decision,
+      dimension,
+      controller,
+      terrain: compactTerrain,
+      botPerspective: compactBotPerspective,
+      action: compactAction
+    }),
     bot: {
       health: snapshot?.health ?? null,
       food: snapshot?.food ?? null,
-      oxygen: snapshot?.oxygen ?? null,
+      ...maybeOxygenField(snapshot),
       position: positionSummary(snapshot?.position),
       dimension: dimension ?? "unknown"
     },
@@ -377,8 +558,8 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       } : null,
       navigationTrap: Boolean(snapshot?.navigationTrap),
       navigationAnalysis: navigationAnalysisSummary(snapshot?.navigationAnalysis),
-      terrain: terrainSummary(snapshot?.terrain),
-      botPerspective: botPerspectiveSummary(snapshot?.botPerspective),
+      terrain: compactTerrain,
+      botPerspective: compactBotPerspective,
       isInLava: Boolean(snapshot?.isInLava),
       isBodyInWater: Boolean(snapshot?.isBodyInWater)
     },
@@ -429,12 +610,18 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       priorityTasks: controller?.priorityTasks ?? null,
       behaviorQueue: controller?.behaviorQueue ?? null,
       agents: controller?.agents ?? null,
-      actionSummary: actionSummary(controller),
-      behaviorLog: behaviorLogSummary(controller),
-      explorationStrategy: explorationStrategySummary(controller)
+      actionSummary: compactAction,
+      behaviorLog: compactBehaviorLog,
+      modeLog: compactModeLog,
+      explorationStrategy: compactExplorationStrategy
     },
-    allowedTasks: listAllowedTasks(),
-    taskTreeClasses: taskClassSummary(),
+    allowedTasks: generalAgentAllowedTasks,
+    localRuleManagedTasks,
+    agentPolicy: {
+      generalAgentCanRequestEmergencyTasks: false,
+      oxygenField: isOxygenRelevant(snapshot) ? "included_when_relevant" : "omitted_normal_ground_air"
+    },
+    taskTreeClasses: taskClassSummary(generalAgentAllowedTasks),
     availableSkills: skillSummary()
   };
 }
@@ -442,6 +629,10 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
 module.exports = {
   buildPlannerContext,
   knownBlockSummary,
+  isGeneralAgentBlockedTask,
+  isOxygenRelevant,
+  listGeneralAgentAllowedTasks,
+  listLocalRuleManagedTasks,
   nearbyEntitySummary,
   positionSummary,
   skillSummary,
@@ -451,6 +642,8 @@ module.exports = {
   botPerspectiveSummary,
   actionSummary,
   behaviorLogSummary,
+  compactFullStateSummary,
   explorationStrategySummary,
+  modeLogSummary,
   topInventoryItems
 };

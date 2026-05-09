@@ -13,10 +13,14 @@ test("openAIToolsFromRegistry exposes JSON schemas for controlled tools", () => 
   const tools = openAIToolsFromRegistry(registry, {});
   const validateTool = tools.find((tool) => tool.function.name === "validate_task_sequence");
   const statusTool = tools.find((tool) => tool.function.name === "query_status");
+  const compactStateTool = tools.find((tool) => tool.function.name === "query_compact_state");
+  const parameterKnowledgeTool = tools.find((tool) => tool.function.name === "query_task_parameter_knowledge");
 
   assert.equal(validateTool.function.parameters.properties.tasks.type, "array");
   assert.deepEqual(validateTool.function.parameters.required, ["tasks"]);
   assert.equal(statusTool.function.parameters.additionalProperties, false);
+  assert.equal(compactStateTool.function.parameters.additionalProperties, false);
+  assert.equal(parameterKnowledgeTool.function.parameters.additionalProperties, false);
 });
 
 test("parseToolArguments accepts JSON objects and rejects invalid payloads", () => {

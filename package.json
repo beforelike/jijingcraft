@@ -13,6 +13,7 @@
     "export:knowledge": "node src/knowledge/exportKnowledge.js",
     "scenario:berries": "node scripts/berryEscapeScenario.js",
     "scenario:berry-escape": "node scripts/berryEscapeScenario.js",
+    "blueprint:import:ponderer": "node tools/ponderer_nbt_to_blueprint.js",
     "test": "node --test test/**/*.test.js"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "mineflayer-pathfinder": "^2.4.5",
     "mineflayer-pvp": "^1.3.2",
     "mineflayer-tool": "^1.2.0",
+    "prismarine-nbt": "^2.8.0",
     "vec3": "^0.1.10"
   }
 }

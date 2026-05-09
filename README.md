@@ -65,6 +65,7 @@ Dashboard 会显示：
 - 研究任务：`GET /api/research/missions` 查询评测任务目录；测试模式下可用 `POST /api/test/mission` 将 mission 的首个任务注入 test pipeline。
 - Agent 思维导图：具体展示 `snapshot -> general_agent -> sub agents -> Smart Brain -> BehaviorExecutionQueue -> Controller -> feedback` 的 payload。
 - 控制诊断：`task_trace_stale`、`blocked_tasks_present`、夜间敌对压力、低血/饥饿等信号。
+- 本地模式日志：记录安全规则接管、自动避险、队列暂停/跳过/中断的原因和结果，便于按 Mindcraft behavior log 的思路回放控制权流向。
 
 图谱不是概念图，会直接显示排障字段，例如 `ruleDecision.type`、`taskFeedback.lastEvent`、LLM `taskRequests.constructorArgs`、队列 `currentTree` / `pendingTrees`、`taskTrace.status`。
 
@@ -92,7 +93,7 @@ LLM 开启后，模型只负责产生受控任务请求，不能直接调用 Min
 
 本地执行层会补齐 `treeClass`、`taskFunction`、`priority`、`level`、preconditions/postconditions，并使用固定的 `taskPriority(taskType)` 排序。模型提交的 priority 会被忽略。
 
-当前开发分支提供 Python Smart Brain 服务作为新的规划入口：Node.js Controller 负责安全规则、Mineflayer 动作和行为树执行；Python 服务负责并发运行 `safety_agent`、`combat_agent`、`survival_agent`、`engineering_agent`，再由 `general_agent` 合并为 `behaviorTrees`。Planner context 会携带 `minecraftWiki`，让本地 JS Planner 和 Python Brain 都能看到水/氧气、前期进度、探索、采木、采石、夜间等待等基础 MC 常识。这个拆分参考 Voyager 的可复用技能库/环境反馈闭环，以及 TouhouLittleMaid 的任务接口与 brain task 分层，但所有执行仍回到本项目的本地白名单行为树。
+当前开发分支提供 Python Smart Brain 服务作为新的规划入口：Node.js Controller 负责安全规则、Mineflayer 动作和行为树执行；Python 服务负责并发运行 `safety_agent`、`combat_agent`、`survival_agent`、`engineering_agent`，再由 `general_agent` 合并为 `behaviorTrees`。Planner context 会携带 `minecraftWiki`、Mindcraft 风格的 `compactState`、以及转译后的 `taskParameterKnowledge`，让本地 JS Planner 和 Python Brain 都能看到水/氧气、前期进度、探索、采木、采石、夜间等待、命令参数映射和基础动作模式。这个拆分参考 Voyager 的可复用技能库/环境反馈闭环，以及 TouhouLittleMaid 的任务接口与 brain task 分层，但所有执行仍回到本项目的本地白名单行为树。
 
 启动 Python Brain：
 

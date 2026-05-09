@@ -146,6 +146,7 @@ function normalizeTerrainScan(terrain = null) {
     waterCells: Number(terrain.regional.waterCells) || 0,
     hazardCells: Number(terrain.regional.hazardCells) || 0,
     safeCells: Number(terrain.regional.safeCells) || 0,
+    treeCells: Number(terrain.regional.treeCells) || 0,
     topBlocks: Array.isArray(terrain.regional.topBlocks) ? terrain.regional.topBlocks.slice(0, 16) : [],
     cells: Array.isArray(terrain.regional.cells) ? terrain.regional.cells.slice(0, 160).map((cell) => ({
       dx: Number(cell.dx) || 0,
@@ -154,7 +155,8 @@ function normalizeTerrainScan(terrain = null) {
       topBlock: cell.topBlock ?? null,
       water: Boolean(cell.water),
       hazard: Boolean(cell.hazard),
-      safeStand: Boolean(cell.safeStand)
+      safeStand: Boolean(cell.safeStand),
+      tree: Boolean(cell.tree)
     })) : []
   } : null;
   const descent = terrain.descent ? {
@@ -327,6 +329,7 @@ function normalizeController(controller = {}) {
     agents: normalizeAgents(controller.agents),
     actionSummary: normalizeActionSummary(controller.actionSummary),
     behaviorLog: normalizeBehaviorLog(controller.behaviorLog),
+    modeLog: normalizeModeLog(controller.modeLog),
     explorationStrategy: normalizeExplorationStrategy(controller.explorationStrategy)
   };
 }
@@ -365,6 +368,22 @@ function normalizeBehaviorLog(behaviorLog = []) {
     : [];
 }
 
+function normalizeModeLog(modeLog = []) {
+  return Array.isArray(modeLog)
+    ? modeLog.slice(-30).map((event = {}) => ({
+      at: event.at ?? null,
+      level: event.level ?? "info",
+      mode: event.mode ?? "local",
+      event: event.event ?? "event",
+      taskType: event.taskType ?? null,
+      ruleDecision: event.ruleDecision ?? null,
+      reason: event.reason ?? null,
+      outcome: event.outcome ?? null,
+      details: normalizeTraceDetails(event.details ?? {})
+    })).reverse()
+    : [];
+}
+
 function normalizeExplorationStrategy(strategy = null) {
   if (!strategy || typeof strategy !== "object") return null;
   return {
@@ -388,6 +407,19 @@ function normalizeExplorationStrategy(strategy = null) {
 }
 
 function normalizeBehaviorQueue(behaviorQueue = {}) {
+  const normalizeNode = (node = {}) => ({
+    id: node.id,
+    label: node.label,
+    kind: node.kind,
+    phaseId: node.phaseId ?? null,
+    handler: node.handler ?? null,
+    until: node.until ?? null,
+    maxIterations: Number(node.maxIterations) || null,
+    continueOnFailure: Boolean(node.continueOnFailure),
+    continueOnChildFailure: Boolean(node.continueOnChildFailure),
+    nodes: Array.isArray(node.nodes) ? node.nodes.slice(0, 12).map(normalizeNode) : []
+  });
+
   const normalizeTree = (tree = null) => (tree && (tree.id || tree.taskType)) ? ({
     id: tree.id ?? null,
     taskType: tree.taskType ?? null,
@@ -415,12 +447,7 @@ function normalizeBehaviorQueue(behaviorQueue = {}) {
     lastReason: tree.lastReason ?? null,
     preconditions: Array.isArray(tree.preconditions) ? tree.preconditions.slice(0, 8) : [],
     postconditions: Array.isArray(tree.postconditions) ? tree.postconditions.slice(0, 8) : [],
-    nodes: Array.isArray(tree.nodes) ? tree.nodes.slice(0, 10).map((node) => ({
-      id: node.id,
-      label: node.label,
-      kind: node.kind,
-      phaseId: node.phaseId ?? null
-    })) : []
+    nodes: Array.isArray(tree.nodes) ? tree.nodes.slice(0, 10).map(normalizeNode) : []
   }) : null;
 
   return {
