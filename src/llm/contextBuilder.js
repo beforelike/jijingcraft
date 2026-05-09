@@ -609,6 +609,8 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       taskQueue: controller?.taskQueue ?? null,
       priorityTasks: controller?.priorityTasks ?? null,
       behaviorQueue: controller?.behaviorQueue ?? null,
+      schedulerStatus: controller?.priorityScheduler?.getStatus?.() ?? null,
+      actionFailureReports: controller?.getFailureReportsForPlanner?.() ?? [],
       agents: controller?.agents ?? null,
       actionSummary: compactAction,
       behaviorLog: compactBehaviorLog,

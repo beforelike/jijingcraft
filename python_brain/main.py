@@ -10,7 +10,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from .brain import SmartBrain
+from .langgraph_agents.brain import LangGraphBrain
 from .config import BrainConfig
 from .llm_client import LLMClient
 from .models import BrainRequest, PlanResponse
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     client = LLMClient(cfg, http)
     app.state.cfg = cfg
     app.state.client = client
-    app.state.brain = SmartBrain(cfg, client)
+    app.state.brain = LangGraphBrain(cfg, client)
     logger.info(
         "Python Smart Brain started on %s:%d | model=%s | llm=%s | parallel=%s",
         cfg.host,

@@ -4,6 +4,8 @@ const { Vec3 } = require("vec3");
 const { AgentOrchestrator } = require("../agents/agentOrchestrator");
 const { BehaviorExecutionQueue } = require("../behavior/behaviorExecutionQueue");
 const { ExecutableBehaviorTreeRunner } = require("../behavior/executableBehaviorTree");
+const { PriorityScheduler } = require("../behavior/PriorityScheduler");
+const { ActionExecutor } = require("../behavior/ActionExecutor");
 const { collectBlockSearchNames, placementFaceOrder } = require("../knowledge/mineflayerActionPatterns");
 const { PythonBrainClient } = require("../llm/pythonBrainClient");
 const { LlmTaskQueue } = require("../llm/taskQueue");
@@ -139,6 +141,13 @@ class SurvivalController {
     this.llmPlanner = options.llmPlanner ?? null;
     this.taskQueue = options.taskQueue ?? new LlmTaskQueue(this.config.llm ?? {});
     this.behaviorQueue = options.behaviorQueue ?? new BehaviorExecutionQueue(this.config.behaviorTrees ?? {});
+    this.priorityScheduler = options.priorityScheduler ?? new PriorityScheduler({
+      ...this.config.behaviorTrees ?? {},
+      maxPending: 8,
+      maxPerType: 2,
+      maxRetries: 3,
+    });
+    this.actionExecutor = options.actionExecutor ?? new ActionExecutor(this.bot);
     this.behaviorTreeRunner = options.behaviorTreeRunner ?? new ExecutableBehaviorTreeRunner();
     this.agentOrchestrator = options.agentOrchestrator ?? new AgentOrchestrator(this.config.agents ?? {});
     this.agentStatus = this.agentOrchestrator?.getStatus?.() ?? null;
@@ -323,7 +332,17 @@ class SurvivalController {
   }
 
   getBehaviorQueueStatus() {
-    return this.behaviorQueue?.getStatus?.() ?? null;
+    const legacy = this.behaviorQueue?.getStatus?.() ?? null;
+    const scheduler = this.priorityScheduler?.getStatus?.() ?? null;
+    return { legacy, scheduler };
+  }
+
+  getFailureReportsForPlanner() {
+    return this.priorityScheduler?.getFailureReportsForPlanner?.() ?? [];
+  }
+
+  clearFailureReports() {
+    this.priorityScheduler?.clearFailureReports?.();
   }
 
   getAgentStatus() {
@@ -2642,16 +2661,24 @@ class SurvivalController {
         return;
       }
       this.discardSupersededPlannerTrees("llm_planner", "planner_superseded", { planId: result.plan.id ?? result.record?.timestamp ?? null });
-      const behaviorResult = this.behaviorQueue.enqueuePlan(filteredPlan.plan, {
+
+      // Enqueue via PriorityScheduler (primary) with BehaviorExecutionQueue fallback
+      const metadata = {
         source: "llm_planner",
         sourcePlanId: result.plan.id ?? result.record?.timestamp ?? null
-      });
+      };
+      const schedulerResult = this.priorityScheduler?.enqueuePlan?.(filteredPlan.plan, metadata)
+        ?? { accepted: false, reason: "scheduler_unavailable" };
+      // Also feed legacy queue for backward compat
+      const behaviorResult = this.behaviorQueue?.enqueuePlan?.(filteredPlan.plan, metadata)
+        ?? { accepted: false, reason: "legacy_queue_unavailable" };
+      const enqueueResult = schedulerResult.accepted ? schedulerResult : behaviorResult;
       this.llmPlanner?.noteQueueDecision?.({
-        accepted: Boolean(behaviorResult.accepted),
-        reason: behaviorResult.reason,
-        taskCount: behaviorResult.taskCount ?? 0,
-        skippedTasks: behaviorResult.rejected ?? [],
-        planId: behaviorResult.planId ?? null,
+        accepted: Boolean(enqueueResult.accepted),
+        reason: enqueueResult.reason,
+        taskCount: enqueueResult.taskCount ?? 0,
+        skippedTasks: enqueueResult.rejected ?? behaviorResult.rejected ?? [],
+        planId: enqueueResult.planId ?? null,
         droppedTaskCount: filteredPlan.droppedTaskCount ?? 0,
         status: behaviorResult.status ?? this.behaviorQueue?.getStatus?.() ?? null
       });
