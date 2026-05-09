@@ -75,3 +75,36 @@ test("keeps previously achieved milestones even after materials are consumed", (
 
   assert.equal(progress.stage, "phase1_stable");
 });
+
+test("exposes playbook counts and targets in assessProgress result", () => {
+  const progress = assessProgress({
+    inventory: { oak_log: 15, cobblestone: 10 },
+    progress: { hasStarterShelter: false }
+  }, {
+    survival: {
+      playbookEnabled: true,
+      day1LogTarget: 20,
+      day1CobblestoneTarget: 24,
+      stockpileLogTarget: 96,
+      stockpileCobblestoneTarget: 128
+    }
+  });
+
+  assert.equal(progress.logsCount, 15);
+  assert.equal(progress.cobblestoneCount, 10);
+  assert.equal(progress.hasShelter, false);
+  assert.equal(progress.playbookEnabled, true);
+  assert.equal(progress.day1LogTarget, 20);
+  assert.equal(progress.day1CobblestoneTarget, 24);
+  assert.equal(progress.stockpileLogTarget, 96);
+  assert.equal(progress.stockpileCobblestoneTarget, 128);
+});
+
+test("hasShelter reflects hasStarterShelter from progress state", () => {
+  const progress = assessProgress({
+    inventory: {},
+    progress: { hasStarterShelter: true }
+  }, { survival: {} });
+
+  assert.equal(progress.hasShelter, true);
+});

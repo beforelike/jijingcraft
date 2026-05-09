@@ -32,7 +32,28 @@ const HOSTILE_MOBS = new Set([
   "zombified_piglin"
 ]);
 
-const FOOD_MOBS = new Set(["cow", "pig", "sheep", "chicken", "rabbit"]);
+const MELEE_HOSTILE_MOBS = new Set([
+  "cave_spider",
+  "drowned",
+  "endermite",
+  "hoglin",
+  "husk",
+  "magma_cube",
+  "piglin_brute",
+  "ravager",
+  "silverfish",
+  "slime",
+  "spider",
+  "vex",
+  "vindicator",
+  "wither_skeleton",
+  "zoglin",
+  "zombie",
+  "zombie_villager",
+  "zombified_piglin"
+]);
+
+const FOOD_MOBS = new Set(["cow", "pig", "sheep", "chicken", "rabbit", "salmon", "cod", "tropical_fish"]);
 
 const LOG_BLOCKS = [
   "oak_log",
@@ -206,6 +227,7 @@ module.exports = {
   FOOD_MOBS,
   HOES,
   HOSTILE_MOBS,
+  MELEE_HOSTILE_MOBS,
   LOG_BLOCKS,
   LOG_TO_PLANKS,
   PICKAXES,

@@ -13,7 +13,7 @@ const config = {
     shelterDefenseRadius: 4,
     foodStockTarget: 18,
     buildShelter: true,
-    shelterBlockTarget: 80,
+    shelterBlockTarget: 160,
     woolTarget: 3,
     plantCrops: true,
     cropPlotTarget: 6,
@@ -46,6 +46,34 @@ test("eats before doing normal work when health is critical and food exists", ()
   assert.equal(decision.type, "eat_food");
 });
 
+test("stabilizes starvation instead of random evasion when critical health has no nearby hostile", () => {
+  const decision = decideNextTask(snapshot({ health: 1, food: 0, inventory: {} }), config);
+  assert.equal(decision.type, "recover_starvation");
+});
+
+test("critical starvation still evades an immediate nearby hostile", () => {
+  const decision = decideNextTask(snapshot({
+    health: 1,
+    food: 0,
+    inventory: {},
+    entities: [{ name: "zombie", distance: 4 }]
+  }), config);
+  assert.equal(decision.type, "evade_hostiles");
+  assert.equal(decision.target, "zombie");
+});
+
+test("critical starvation evades night hostile pressure before passive recovery", () => {
+  const decision = decideNextTask(snapshot({
+    health: 1,
+    food: 0,
+    isNight: true,
+    inventory: {},
+    entities: [{ name: "skeleton", distance: 26 }]
+  }), config);
+  assert.equal(decision.type, "evade_hostiles");
+  assert.equal(decision.target, "skeleton");
+});
+
 test("escapes damaging plant blocks before normal work", () => {
   const decision = decideNextTask(snapshot({
     environmentHazard: { name: "sweet_berry_bush", distance: 0.4 }
@@ -56,15 +84,66 @@ test("escapes damaging plant blocks before normal work", () => {
 test("escapes a navigation pit before normal mining or crafting", () => {
   const decision = decideNextTask(snapshot({
     navigationTrap: true,
+    navigationAnalysis: { summary: "navigation trap: elevated support column; recommended=controlled_descent" },
     inventory: { wooden_pickaxe: 1, cobblestone: 3, stick: 2 },
     progress: { hasCraftingTable: true }
   }), config);
   assert.equal(decision.type, "escape_pit");
+  assert.match(decision.reason, /controlled_descent/);
 });
 
-test("evades hostile mobs before hunger and crafting tasks", () => {
-  const decision = decideNextTask(snapshot({ entities: [{ name: "zombie", distance: 18 }] }), config);
+test("does not escape ordinary water while oxygen buffer remains", () => {
+  const decision = decideNextTask(snapshot({ oxygen: 12, isBodyInWater: true, inventory: { oak_log: 1 } }), {
+    survival: { ...config.survival, lowOxygenThreshold: 8 }
+  });
+
+  assert.notEqual(decision.type, "escape_hazard");
+});
+
+test("escapes low oxygen before waiting for drowning damage", () => {
+  const decision = decideNextTask(snapshot({ oxygen: 8, isBodyInWater: true }), {
+    survival: { ...config.survival, lowOxygenThreshold: 8 }
+  });
+
+  assert.equal(decision.type, "escape_hazard");
+});
+
+test("descends from an elevated platform before collecting wood", () => {
+  const decision = decideNextTask(snapshot({
+    terrain: {
+      descent: {
+        needsDescent: true,
+        summary: "elevated platform: water landing 20 blocks below",
+        bestTarget: {
+          waterPosition: { x: 4, y: 60, z: 4 },
+          entryPosition: { x: 4, y: 61, z: 4 },
+          drop: 20
+        }
+      }
+    },
+    inventory: {}
+  }), config);
+
+  assert.equal(decision.type, "descend_from_platform");
+  assert.deepEqual(decision.targetPosition, { x: 4, y: 61, z: 4 });
+});
+
+test("evades nearby daylight hostile mobs before hunger and crafting tasks", () => {
+  const decision = decideNextTask(snapshot({ entities: [{ name: "zombie", distance: 9 }] }), config);
   assert.equal(decision.type, "evade_hostiles");
+});
+
+test("continues progression when daylight hostile pressure is distant", () => {
+  const decision = decideNextTask(snapshot({ entities: [{ name: "spider", distance: 17 }] }), config);
+  assert.equal(decision.type, "collect_wood");
+});
+
+test("defends against daylight melee threats when armed", () => {
+  const decision = decideNextTask(snapshot({
+    entities: [{ name: "zombie", distance: 3 }],
+    inventory: { stone_sword: 1 }
+  }), config);
+  assert.equal(decision.type, "defend_self");
 });
 
 test("evades immediate hostile mobs at night", () => {
@@ -72,10 +151,19 @@ test("evades immediate hostile mobs at night", () => {
   assert.equal(decision.type, "evade_hostiles");
 });
 
-test("evades armed hostile mobs at night before they are in melee range", () => {
+test("defends against close armed melee mobs at night before retreating fails", () => {
   const decision = decideNextTask(snapshot({
     isNight: true,
     entities: [{ name: "zombie", distance: 6 }],
+    inventory: { stone_sword: 1 }
+  }), config);
+  assert.equal(decision.type, "defend_self");
+});
+
+test("evades armed ranged mobs at night instead of chasing them", () => {
+  const decision = decideNextTask(snapshot({
+    isNight: true,
+    entities: [{ name: "skeleton", distance: 6 }],
     inventory: { stone_sword: 1 }
   }), config);
   assert.equal(decision.type, "evade_hostiles");
@@ -90,7 +178,7 @@ test("seals a temporary shelter instead of fighting when blocks are available", 
   assert.equal(decision.type, "wait_out_night");
 });
 
-test("holds position for distant hostile mobs at night without shelter blocks", () => {
+test("holds distant hostile pressure at night without shelter blocks", () => {
   const decision = decideNextTask(snapshot({ isNight: true, entities: [{ name: "zombie", distance: 25 }] }), config);
   assert.equal(decision.type, "hold_position");
 });
@@ -100,6 +188,24 @@ test("waits at night instead of fleeing distant mobs when shelter blocks exist",
     isNight: true,
     inventory: { dirt: 8 },
     entities: [{ name: "skeleton", distance: 25 }]
+  }), config);
+  assert.equal(decision.type, "wait_out_night");
+});
+
+test("does not hunt for food at night when hunger is low and no food is available", () => {
+  const decision = decideNextTask(snapshot({
+    isNight: true,
+    food: 3,
+    inventory: {}
+  }), config);
+  assert.equal(decision.type, "hold_position");
+});
+
+test("uses temporary shelter instead of hunting for food at night when blocks are available", () => {
+  const decision = decideNextTask(snapshot({
+    isNight: true,
+    food: 3,
+    inventory: { dirt: 8 }
   }), config);
   assert.equal(decision.type, "wait_out_night");
 });
@@ -118,11 +224,35 @@ test("does not treat a distant remembered shelter as current night safety", () =
     isNight: true,
     progress: {
       hasStarterShelter: true,
+      starterShelterPosition: { x: 40, y: 64, z: 0 },
+      isNearStarterShelter: false,
+      isStarterShelterDefensible: false
+    }
+  }), config);
+  assert.equal(decision.type, "wait_out_night");
+  assert.match(decision.reason, /remembered starter shelter/);
+});
+
+test("holds at night when shelter completion has no remembered position", () => {
+  const decision = decideNextTask(snapshot({
+    isNight: true,
+    progress: {
+      hasStarterShelter: true,
       isNearStarterShelter: false,
       isStarterShelterDefensible: false
     }
   }), config);
   assert.equal(decision.type, "hold_position");
+});
+
+test("eats carried food before night holding when the food buffer is low", () => {
+  const decision = decideNextTask(snapshot({
+    isNight: true,
+    food: 15,
+    inventory: { sweet_berries: 7 }
+  }), config);
+  assert.equal(decision.type, "eat_food");
+  assert.match(decision.reason, /night food buffer/);
 });
 
 test("uses a temporary shelter when remembered starter shelter is far away", () => {
@@ -193,9 +323,9 @@ test("crafts local tools at night when materials are ready", () => {
   assert.equal(decision.type, "craft_basic_tools");
 });
 
-test("evades when health is critical and no food is available", () => {
+test("recovers starvation when health is critical and no food is available", () => {
   const decision = decideNextTask(snapshot({ health: 4 }), config);
-  assert.equal(decision.type, "evade_hostiles");
+  assert.equal(decision.type, "recover_starvation");
 });
 
 test("collects wood at the start of the survival tech tree", () => {
@@ -241,7 +371,7 @@ test("collects stone before risky shelter material work when stone tools are mis
       wooden_sword: 1,
       crafting_table: 1,
       stick: 2,
-      dirt: 80,
+      dirt: 160,
       cooked_beef: 18
     }
   }), config);
@@ -263,6 +393,26 @@ test("builds a starter food reserve before gathering house materials", () => {
   assert.equal(decision.type, "hunt_food");
 });
 
+test("continues progression when food buffer was already achieved and hunger is stable", () => {
+  const decision = decideNextTask(snapshot({
+    inventory: {
+      stone_pickaxe: 1,
+      stone_sword: 1,
+      cobblestone: 11,
+      furnace: 1,
+      stick: 2,
+      oak_planks: 8,
+      dirt: 16
+    },
+    progress: {
+      hasCraftingTable: true,
+      achievedMilestones: ["food_buffer"]
+    }
+  }), config);
+
+  assert.equal(decision.type, "collect_building_materials");
+});
+
 test("rebuilds a fixed shelter when the remembered one is not usable nearby", () => {
   const decision = decideNextTask(snapshot({
     inventory: {
@@ -271,7 +421,7 @@ test("rebuilds a fixed shelter when the remembered one is not usable nearby", ()
       cobblestone: 11,
       furnace: 1,
       cooked_beef: 18,
-      dirt: 80
+      dirt: 160
     },
     progress: {
       hasCraftingTable: true,
@@ -300,7 +450,7 @@ test("upgrades stone weapon and axe before spending all cobblestone on later goa
 test("mines advanced materials only after base preparation", () => {
   const decision = decideNextTask(snapshot({
     inventory: {
-      oak_planks: 80,
+      oak_planks: 160,
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,
@@ -318,7 +468,7 @@ test("mines advanced materials only after base preparation", () => {
 test("explores once base and advanced material goals are complete", () => {
   const decision = decideNextTask(snapshot({
     inventory: {
-      oak_planks: 80,
+      oak_planks: 160,
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,
@@ -369,7 +519,7 @@ test("collects building materials before building a starter shelter", () => {
 test("builds a starter shelter before open-ended exploration", () => {
   const decision = decideNextTask(snapshot({
     inventory: {
-      oak_planks: 80,
+      oak_planks: 160,
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,
@@ -386,7 +536,7 @@ test("builds a starter shelter at night when materials are ready", () => {
   const decision = decideNextTask(snapshot({
     isNight: true,
     inventory: {
-      oak_planks: 80,
+      oak_planks: 160,
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,
@@ -467,4 +617,45 @@ test("builds an animal pen after crops are started", () => {
     progress: { hasStarterShelter: true, hasCropPlot: true }
   }), config);
   assert.equal(decision.type, "build_animal_pen");
+});
+
+test("playbook stockpile collects logs after shelter when enabled", () => {
+  const playbookConfig = {
+    survival: {
+      ...config.survival,
+      playbookEnabled: true,
+      day1LogTarget: 20,
+      day1CobblestoneTarget: 24,
+      stockpileLogTarget: 64,
+      stockpileCobblestoneTarget: 64,
+      foodStockTarget: 12,
+      buildShelter: false,
+      plantCrops: false,
+      buildAnimalPen: false,
+      advancedMaterialTarget: 0
+    }
+  };
+
+  const decision = decideNextTask(snapshot({
+    inventory: {
+      oak_log: 24,
+      crafting_table: 1,
+      stick: 4,
+      stone_pickaxe: 1,
+      stone_sword: 1,
+      cobblestone: 24,
+      furnace: 1,
+      cooked_beef: 12,
+      white_bed: 1
+    },
+    progress: {
+      hasStarterShelter: true,
+      isNearStarterShelter: true,
+      isStarterShelterDefensible: true,
+      hasCraftingTable: true
+    }
+  }), playbookConfig);
+
+  assert.equal(decision.type, "collect_wood");
+  assert.match(decision.reason, /stockpile logs/);
 });

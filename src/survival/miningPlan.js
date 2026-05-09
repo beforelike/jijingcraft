@@ -63,6 +63,7 @@ function miningTargetScore(candidate, origin, options = {}) {
   let score = distance;
 
   if (options.preferSurface && candidate.isSurface) score -= options.surfacePreference ?? 1000;
+  if (candidate.isOwnSupport && options.deferOwnSupportTarget !== false) score += options.ownSupportPenalty ?? 0.75;
   if (position && Object.prototype.hasOwnProperty.call(options, "maxMineBelow") && position.y < base.y - options.maxMineBelow) {
     score += (options.belowPenalty ?? 250) * (base.y - position.y);
   }
