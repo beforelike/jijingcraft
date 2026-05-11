@@ -198,6 +198,39 @@ test("task feedback records repeated action failures as a blocked task", () => {
   assert.ok(status.blockedTasks[0].recoveryTasks.includes("explore"));
 });
 
+test("busy watchdog blocks collectStone when heartbeat masks no movement progress", () => {
+  const controller = createController();
+  controller.config.survival.taskNoProgressMs = 5000;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [] },
+    blockAt: () => ({ name: "air", boundingBox: "empty" }),
+    collectBlock: { cancelTask() {} }
+  };
+  controller.startTaskTrace({ type: "collect_stone", reason: "stone tools required" }, { primarySkillId: "early_stone_tools", plan: {} }, {
+    position: controller.bot.entity.position,
+    health: 20,
+    food: 20
+  });
+  const staleAt = Date.now() - 6000;
+  controller.taskProgressWatch.lastProgressAt = staleAt;
+  controller.taskProgressWatch.updatedAt = new Date(staleAt).toISOString();
+  controller.touchTaskTrace({ action: "collect_stone", mode: "heartbeat_only" });
+
+  const interrupted = controller.checkBusyWatchdog();
+  const feedback = controller.getTaskFeedbackStatus();
+  const progress = controller.getTaskProgressStatus();
+
+  assert.equal(interrupted, true);
+  assert.equal(progress.status, "stuck");
+  assert.equal(progress.interrupted, true);
+  assert.equal(feedback.lastEvent.reason, "no_progress_stuck");
+  assert.equal(feedback.blockedTasks[0].taskType, "collect_stone");
+  assert.equal(feedback.blockedTasks[0].recoveryTasks.includes("explore"), true);
+  assert.equal(controller.taskTrace.status, "failed");
+  assert.equal(controller.modeLog.some((entry) => entry.event === "task_no_progress"), true);
+});
+
 test("task feedback does not block a task from unrelated transient failure reasons", () => {
   const controller = createController();
   controller.currentDecisionType = "hunt_food";
@@ -1879,6 +1912,35 @@ test("starvation damage does not trigger unknown damage reposition", async () =>
   assert.equal(controller.emergencyBusy, undefined);
 });
 
+test("unknown damage under ice breaks for air instead of repositioning", async () => {
+  let brokeIce = false;
+  let moved = false;
+  const controller = createController({
+    describeImmediateEnvironment: () => "feet:water,head:ice,ground:water",
+    breakOverheadIceForAir: async () => {
+      brokeIce = true;
+      return true;
+    },
+    gotoNear: async () => {
+      moved = true;
+      return true;
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 63, 0) },
+    blockAt: (position) => {
+      if (position.y === 63) return { name: "water", boundingBox: "empty" };
+      if (position.y === 64) return { name: "ice", boundingBox: "block", position };
+      return { name: "air", boundingBox: "empty" };
+    }
+  };
+
+  await controller.respondToUnknownDamage(20, 19);
+
+  assert.equal(brokeIce, true);
+  assert.equal(moved, false);
+});
+
 test("huntFood records success when raw chicken is collected", async () => {
   const animal = { id: 1, name: "chicken", position: new Vec3(2, 64, 0) };
   let inventoryItems = [];
@@ -1973,6 +2035,191 @@ test("huntFood pursues visible distant salmon when food is low", async () => {
   assert.ok(gotoOptions.options.radius >= 32);
   assert.equal(success.action, "hunt_food");
   assert.equal(success.details.target, "salmon");
+});
+
+test("huntFood keeps following a land animal during the attack window", async () => {
+  const pig = { id: 3, name: "pig", position: new Vec3(3, 64, 0) };
+  let inventoryItems = [];
+  const followGoals = [];
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1000,
+        foodSearchRadius: 16,
+        lowFood: 14,
+        criticalHealth: 8,
+        threatRadius: 8,
+        panicRetreatMs: 500
+      }
+    },
+    equipBestWeapon: async () => true,
+    gotoEntity: async () => true,
+    collectNearbyItems: async () => {
+      inventoryItems = [{ name: "porkchop", count: 1, slot: 36 }];
+      return true;
+    }
+  });
+  controller.bot = {
+    health: 20,
+    food: 10,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: { [pig.id]: pig },
+    inventory: { items: () => inventoryItems },
+    pathfinder: { setGoal: (goal) => followGoals.push(goal) },
+    lookAt: async () => {},
+    attack: () => { delete controller.bot.entities[pig.id]; },
+    pvp: { attack() {}, stop() {} }
+  };
+
+  const result = await controller.huntFood({ constructorArgs: { target: "pig" } });
+
+  assert.equal(result, true);
+  assert.equal(followGoals.some(Boolean), true);
+  assert.equal(inventoryItems[0].name, "porkchop");
+});
+
+test("huntFood keeps swimming toward fish during the attack window", async () => {
+  const salmon = { id: 4, name: "salmon", position: new Vec3(4, 64, 0) };
+  let inventoryItems = [];
+  const controls = [];
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1000,
+        foodSearchRadius: 16,
+        lowFood: 14,
+        criticalHealth: 8,
+        threatRadius: 8,
+        panicRetreatMs: 500,
+        lowOxygenThreshold: 8
+      }
+    },
+    equipBestWeapon: async () => true,
+    gotoEntity: async () => true,
+    collectNearbyItems: async () => {
+      inventoryItems = [{ name: "salmon", count: 1, slot: 36 }];
+      return true;
+    }
+  });
+  controller.bot = {
+    health: 20,
+    food: 10,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: { [salmon.id]: salmon },
+    inventory: { items: () => inventoryItems },
+    pathfinder: { setGoal() {} },
+    lookAt: async () => {},
+    setControlState: (control, value) => controls.push({ control, value }),
+    attack: () => { delete controller.bot.entities[salmon.id]; },
+    pvp: { attack() {}, stop() {} }
+  };
+
+  const result = await controller.huntFood({ constructorArgs: { target: "salmon", allowAquaticHunt: true } });
+
+  assert.equal(result, true);
+  assert.equal(controls.some((entry) => entry.control === "forward" && entry.value === true), true);
+  assert.equal(inventoryItems[0].name, "salmon");
+});
+
+test("pursueAndAttackFoodTarget keeps chasing fish that flee after the first hit", async () => {
+  const salmon = { id: 41, name: "salmon", position: new Vec3(6, 64, 0) };
+  const controls = new Map();
+  const controlLog = [];
+  const followGoals = [];
+  let attackCount = 0;
+  let waitCount = 0;
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1400,
+        lowOxygenThreshold: 8,
+        threatRadius: 8,
+        panicRetreatMs: 500
+      }
+    },
+    wait: async () => {
+      waitCount++;
+      if (controls.get("forward")) controller.bot.entity.position = controller.bot.entity.position.offset(1.5, 0, 0);
+      if (waitCount <= 2 && controller.bot.entities[salmon.id]) salmon.position = salmon.position.offset(1, 0, 0);
+    }
+  });
+  controller.bot = {
+    health: 20,
+    food: 10,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: { [salmon.id]: salmon },
+    pathfinder: { setGoal: (goal) => followGoals.push(goal) },
+    lookAt: async () => {},
+    setControlState: (control, value) => {
+      controls.set(control, value);
+      controlLog.push({ control, value });
+    },
+    attack: () => {
+      attackCount++;
+      if (attackCount >= 2) delete controller.bot.entities[salmon.id];
+    },
+    pvp: { attack() {}, stop() {} }
+  };
+
+  const result = await controller.pursueAndAttackFoodTarget(salmon, {
+    aquatic: true,
+    timeoutMs: 1400,
+    tickMs: 100,
+    attackCooldownMs: 0,
+    manualSwimRange: 12
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.killed, true);
+  assert.ok(attackCount >= 2);
+  assert.equal(followGoals.some(Boolean), false);
+  assert.equal(controlLog.some((entry) => entry.control === "forward" && entry.value === true), true);
+});
+
+test("pursueAndAttackFoodTarget descends toward deeper fish", async () => {
+  const cod = { id: 42, name: "cod", position: new Vec3(5, 60, 0) };
+  const controls = [];
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 500,
+        lowOxygenThreshold: 8,
+        threatRadius: 8,
+        panicRetreatMs: 500
+      }
+    },
+    isBodyInWater: () => true,
+    wait: async () => { delete controller.bot.entities[cod.id]; }
+  });
+  controller.bot = {
+    health: 20,
+    food: 10,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 63, 0) },
+    entities: { [cod.id]: cod },
+    pathfinder: { setGoal() {} },
+    lookAt: async () => {},
+    setControlState: (control, value) => controls.push({ control, value }),
+    attack: () => {},
+    pvp: { attack() {}, stop() {} }
+  };
+
+  const result = await controller.pursueAndAttackFoodTarget(cod, {
+    aquatic: true,
+    timeoutMs: 500,
+    tickMs: 100,
+    manualSwimRange: 8
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(controls.some((entry) => entry.control === "sneak" && entry.value === true), true);
 });
 
 test("huntFood forages nearby mature berries before chasing distant salmon", async () => {
@@ -2222,6 +2469,90 @@ test("selectHuntFoodTarget includes distant fish during low-food recovery", () =
 
   assert.equal(selected.animal.name, "salmon");
   assert.equal(selected.aquaticAnimal.name, "salmon");
+});
+
+test("huntFood keeps the full land search radius before choosing nearby fish", async () => {
+  const cow = { id: 1, name: "cow", position: new Vec3(40, 64, 0) };
+  const salmon = { id: 2, name: "salmon", position: new Vec3(8, 64, 0) };
+  let approached = null;
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1000,
+        foodSearchRadius: 48,
+        lowFood: 14,
+        criticalHealth: 8,
+        threatRadius: 8,
+        panicRetreatMs: 500
+      }
+    },
+    ensureHuntingWeapon: async () => true,
+    forageNearbyFood: async () => false,
+    gotoEntity: async (entity) => {
+      approached = entity;
+      return false;
+    },
+    explore: async () => false
+  });
+  controller.bot = {
+    health: 20,
+    food: 10,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: { [cow.id]: cow, [salmon.id]: salmon },
+    inventory: { items: () => [] },
+    pvp: { attack() {}, stop() {} },
+    blockAt: () => ({ name: "air", boundingBox: "empty" })
+  };
+
+  await controller.huntFood();
+
+  assert.equal(approached, cow);
+});
+
+test("huntFood approaches a safe open water edge when no visible food mobs are loaded", async () => {
+  let gotoNearCall = null;
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1000,
+        foodSearchRadius: 32,
+        lowFood: 14,
+        criticalHealth: 8,
+        threatRadius: 8,
+        panicRetreatMs: 500
+      }
+    },
+    forageNearbyFood: async () => false,
+    gotoNear: async (x, y, z, range, options) => {
+      gotoNearCall = { x, y, z, range, options };
+      return true;
+    },
+    explore: async () => assert.fail("huntFood should use open water search before random exploration")
+  });
+  controller.bot = {
+    health: 20,
+    food: 15,
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: {},
+    inventory: { items: () => [] },
+    pvp: { attack() {}, stop() {} },
+    blockAt: (position) => {
+      if (position.x === 4 && position.y === 64 && position.z === 0) return { name: "water", boundingBox: "empty" };
+      if (position.y === 63) return { name: "grass_block", boundingBox: "block" };
+      return { name: "air", boundingBox: "empty" };
+    }
+  };
+
+  const result = await controller.huntFood({ constructorArgs: { allowAquaticHunt: true } });
+
+  assert.equal(result, false);
+  assert.equal(gotoNearCall.options.label, "open_water_food_search");
+  assert.equal(gotoNearCall.options.target, "open_water_food_search");
+  assert.equal(new Vec3(gotoNearCall.x, gotoNearCall.y, gotoNearCall.z).distanceTo(new Vec3(4, 64, 0)) <= 6, true);
 });
 
 test("forageNearbyFood harvests the whole mature berry patch while below target", async () => {
@@ -3241,6 +3572,197 @@ test("rankMineableBlocks prefers adjacent exposed ground-level stone over buried
   assert.equal(ranked.some((block) => controller.sameBlockPosition(block.position, distantExposed.position)), true);
 });
 
+test("rankMineableBlocks rejects stone that only has icy mining stands", () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({
+    name,
+    position,
+    boundingBox,
+    diggable: boundingBox === "block"
+  });
+  const lakeStone = makeBlock("stone", new Vec3(0, 63, 0));
+  const dryStone = makeBlock("stone", new Vec3(4, 63, 0));
+  const iceCappedStone = makeBlock("stone", new Vec3(8, 63, 0));
+  const controller = createController({
+    isDamagingBlock: () => false,
+    isLearnedAvoidPosition: () => false,
+    findNearbyDamagingBlock: () => null
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0.5, 64, 4.5) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (controller.sameBlockPosition(blockPosition, lakeStone.position)) return lakeStone;
+      if (controller.sameBlockPosition(blockPosition, dryStone.position)) return dryStone;
+      if (controller.sameBlockPosition(blockPosition, iceCappedStone.position)) return iceCappedStone;
+      if (controller.sameBlockPosition(blockPosition, iceCappedStone.position.offset(0, 1, 0))) return makeBlock("ice", blockPosition);
+      if (blockPosition.y === 63 && Math.abs(blockPosition.x - lakeStone.position.x) <= 1 && Math.abs(blockPosition.z - lakeStone.position.z) <= 1) {
+        return makeBlock("ice", blockPosition);
+      }
+      if (blockPosition.y === 63) return makeBlock("grass_block", blockPosition);
+      return makeBlock("air", blockPosition, "empty");
+    }
+  };
+
+  const ranked = controller.rankMineableBlocks([lakeStone.position, dryStone.position, iceCappedStone.position], {
+    action: "collect_stone",
+    safeMining: true,
+    surfaceOnly: true,
+    preferSurface: true,
+    maxMineBelow: 1,
+    allowOwnSupportTarget: true
+  });
+
+  assert.deepEqual(ranked.map((block) => block.position), [dryStone.position]);
+});
+
+test("rankMineableBlocks rejects stone covered by falling blocks", () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({
+    name,
+    position,
+    boundingBox,
+    diggable: boundingBox === "block"
+  });
+  const sandCoveredStone = makeBlock("stone", new Vec3(0, 63, 0));
+  const gravelCoveredStone = makeBlock("stone", new Vec3(4, 63, 0));
+  const dryStone = makeBlock("stone", new Vec3(8, 63, 0));
+  const controller = createController({
+    isDamagingBlock: () => false,
+    isLearnedAvoidPosition: () => false,
+    findNearbyDamagingBlock: () => null
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0.5, 64, 4.5) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (controller.sameBlockPosition(blockPosition, sandCoveredStone.position)) return sandCoveredStone;
+      if (controller.sameBlockPosition(blockPosition, gravelCoveredStone.position)) return gravelCoveredStone;
+      if (controller.sameBlockPosition(blockPosition, dryStone.position)) return dryStone;
+      if (controller.sameBlockPosition(blockPosition, sandCoveredStone.position.offset(0, 1, 0))) return makeBlock("sand", blockPosition);
+      if (controller.sameBlockPosition(blockPosition, gravelCoveredStone.position.offset(0, 2, 0))) return makeBlock("gravel", blockPosition);
+      if (blockPosition.y === 63) return makeBlock("grass_block", blockPosition);
+      return makeBlock("air", blockPosition, "empty");
+    }
+  };
+
+  const ranked = controller.rankMineableBlocks([sandCoveredStone.position, gravelCoveredStone.position, dryStone.position], {
+    action: "collect_stone",
+    safeMining: true,
+    surfaceOnly: true,
+    preferSurface: true,
+    maxMineBelow: 1,
+    allowOwnSupportTarget: true
+  });
+
+  assert.deepEqual(ranked.map((block) => block.position), [dryStone.position]);
+});
+
+test("safe mining stand rejects falling block ground and overhead", () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({ name, position, boundingBox, diggable: boundingBox === "block" });
+  const controller = createController({ isDamagingBlock: () => false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (controller.sameBlockPosition(blockPosition, new Vec3(0, 63, 0))) return makeBlock("sand", blockPosition);
+      if (controller.sameBlockPosition(blockPosition, new Vec3(4, 63, 0))) return makeBlock("stone", blockPosition);
+      if (controller.sameBlockPosition(blockPosition, new Vec3(4, 67, 0))) return makeBlock("gravel", blockPosition);
+      if (blockPosition.y >= 64 && blockPosition.y <= 66) return makeBlock("air", blockPosition, "empty");
+      return makeBlock("stone", blockPosition);
+    }
+  };
+
+  assert.equal(controller.isSafeMiningStandPosition(new Vec3(0, 64, 0)), false);
+  assert.equal(controller.isSafeMiningStandPosition(new Vec3(4, 64, 0)), false);
+  assert.equal(controller.isSafeMiningStandPosition(new Vec3(8, 64, 0)), true);
+});
+
+test("safe mining stand rejects unsupported adjacent falling blocks", () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({ name, position, boundingBox, diggable: boundingBox === "block" });
+  const controller = createController({ isDamagingBlock: () => false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (controller.sameBlockPosition(blockPosition, new Vec3(0, 63, 0))) return makeBlock("stone", blockPosition);
+      if (controller.sameBlockPosition(blockPosition, new Vec3(1, 64, 0))) return makeBlock("sand", blockPosition);
+      if (controller.sameBlockPosition(blockPosition, new Vec3(1, 63, 0))) return makeBlock("air", blockPosition, "empty");
+      if (blockPosition.y === 64 || blockPosition.y === 65) return makeBlock("air", blockPosition, "empty");
+      return makeBlock("stone", blockPosition);
+    }
+  };
+
+  assert.equal(controller.isSafeMiningStandPosition(new Vec3(0, 64, 0)), false);
+});
+
+test("digBlockAt refuses to remove falling block support", async () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({ name, position, boundingBox, diggable: boundingBox === "block" });
+  const controller = createController({
+    equipBestTool: async () => {
+      throw new Error("support guard should return before equipping");
+    }
+  });
+  controller.bot = {
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (controller.sameBlockPosition(blockPosition, new Vec3(0, 64, 0))) return makeBlock("stone", blockPosition);
+      if (controller.sameBlockPosition(blockPosition, new Vec3(0, 65, 0))) return makeBlock("sand", blockPosition);
+      return makeBlock("air", blockPosition, "empty");
+    },
+    dig: async () => {
+      throw new Error("support guard should return before digging");
+    }
+  };
+
+  assert.equal(await controller.digBlockAt(new Vec3(0, 64, 0)), false);
+});
+
+test("falling block entrapment detects sand in body space", () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({ name, position, boundingBox, diggable: boundingBox === "block" });
+  const controller = createController({ isDamagingBlock: () => false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (controller.sameBlockPosition(blockPosition, new Vec3(0, 65, 0))) return makeBlock("gravel", blockPosition);
+      if (blockPosition.y === 64) return makeBlock("air", blockPosition, "empty");
+      return makeBlock("stone", blockPosition);
+    }
+  };
+
+  const hazard = controller.findFallingBlockEntrapment(new Vec3(0, 64, 0));
+  assert.equal(hazard.name, "gravel");
+  assert.equal(hazard.role, "head");
+  assert.equal(hazard.reason, "body_space_occupied_by_falling_block");
+});
+
+test("excavateMineProbe does not dig downward through beach sand", async () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({ name, position, boundingBox, diggable: boundingBox === "block" });
+  const controller = createController({
+    shouldAbortCurrentAction: () => false,
+    nearestEntity: () => null,
+    prioritizedCardinalDirections: () => [new Vec3(1, 0, 0)],
+    digBlockAt: async () => {
+      throw new Error("probe should not dig falling blocks");
+    },
+    collectNearbyItems: async () => false
+  });
+  controller.progressState = { miningTrips: 0 };
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (blockPosition.y === 63) return makeBlock("sand", blockPosition);
+      if (blockPosition.y === 64 || blockPosition.y === 65) return makeBlock("air", blockPosition, "empty");
+      return makeBlock("stone", blockPosition);
+    }
+  };
+
+  const result = await controller.excavateMineProbe();
+
+  assert.deepEqual(result, { dug: 0, moved: 0 });
+  assert.equal(controller.progressState.miningTrips, 0);
+});
+
 test("rankMineableBlocks prefers low reachable logs per tree column", () => {
   const lowLog = { name: "spruce_log", position: new Vec3(4, 64, 0), diggable: true };
   const highLog = { name: "spruce_log", position: new Vec3(4, 72, 0), diggable: true };
@@ -3622,6 +4144,100 @@ test("collectNearbyItems escapes if item pickup touches a damaging bush", async 
   assert.equal(escaped, hazard);
 });
 
+test("collectHuntDrops swims to floating fish drops", async () => {
+  const drop = { id: 90, name: "item", itemName: "salmon", position: new Vec3(4, 63, 0) };
+  const controls = new Map();
+  const controlLog = [];
+  let inventoryItems = [];
+  const controller = createController({
+    wait: async () => {
+      if (controls.get("forward")) controller.bot.entity.position = controller.bot.entity.position.offset(1.4, 0, 0);
+      if (controller.bot.entities[drop.id] && controller.bot.entity.position.distanceTo(drop.position) <= 1.4) {
+        inventoryItems = [{ name: "salmon", count: 1, slot: 36 }];
+        delete controller.bot.entities[drop.id];
+      }
+    }
+  });
+  controller.bot = {
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 63, 0) },
+    entities: { [drop.id]: drop },
+    inventory: { items: () => inventoryItems },
+    blockAt: (position) => {
+      if (position.y >= 62 && position.y <= 64 && position.x >= 1) return { name: "water", boundingBox: "empty" };
+      if (position.y === 62) return { name: "stone", boundingBox: "block" };
+      return { name: "air", boundingBox: "empty" };
+    },
+    lookAt: async () => {},
+    setControlState: (control, value) => {
+      controls.set(control, value);
+      controlLog.push({ control, value });
+    }
+  };
+
+  const collected = await controller.collectHuntDrops({
+    beforeFood: 0,
+    targetName: "salmon",
+    allowWater: true,
+    maxDistance: 8,
+    timeoutMs: 2000,
+    tickMs: 100
+  });
+
+  assert.equal(collected, true);
+  assert.equal(inventoryItems[0].name, "salmon");
+  assert.equal(controlLog.some((entry) => entry.control === "forward" && entry.value === true), true);
+  assert.equal(controlLog.some((entry) => entry.control === "jump" && entry.value === true), true);
+});
+
+test("collectHuntDrops ignores unrelated item drops", async () => {
+  const dirtDrop = { id: 91, name: "item", itemName: "dirt", position: new Vec3(1, 64, 0) };
+  let moved = false;
+  const controller = createController({
+    gotoNear: async () => {
+      moved = true;
+      return true;
+    },
+    wait: async () => {}
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: { [dirtDrop.id]: dirtDrop },
+    inventory: { items: () => [] },
+    blockAt: () => ({ name: "air", boundingBox: "empty" })
+  };
+
+  const collected = await controller.collectHuntDrops({ beforeFood: 0, maxDistance: 4, timeoutMs: 300, tickMs: 100 });
+
+  assert.equal(collected, false);
+  assert.equal(moved, false);
+});
+
+test("collectHuntDrops tries unknown item drops but only succeeds on food gain", async () => {
+  const drop = { id: 92, name: "item", position: new Vec3(2, 64, 0) };
+  let inventoryItems = [];
+  let moved = false;
+  const controller = createController({
+    gotoNear: async () => {
+      moved = true;
+      inventoryItems = [{ name: "cod", count: 1, slot: 36 }];
+      delete controller.bot.entities[drop.id];
+      return true;
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: { [drop.id]: drop },
+    inventory: { items: () => inventoryItems },
+    blockAt: () => ({ name: "air", boundingBox: "empty" })
+  };
+
+  const collected = await controller.collectHuntDrops({ beforeFood: 0, maxDistance: 4, timeoutMs: 500, tickMs: 100 });
+
+  assert.equal(collected, true);
+  assert.equal(moved, true);
+});
+
 test("reachFirstSafeBerryPosition aborts when emergency damage interrupts foraging", async () => {
   let moved = false;
   const controller = createController({
@@ -3945,6 +4561,62 @@ test("analyzeNavigationSituation identifies an elevated support column descent",
   assert.equal(analysis.safeSupportDescent, true);
 });
 
+test("analyzeNavigationSituation treats underground mining pockets as surface recovery traps", () => {
+  const controller = createController();
+  const stoneAt = (position) => ({ name: "stone", position, boundingBox: "block", diggable: true });
+  const grassAt = (position) => ({ name: "grass_block", position, boundingBox: "block", diggable: true });
+  const airAt = (position) => ({ name: "air", position, boundingBox: "empty", diggable: false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 50, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : position;
+      if (blockPosition.x === 4 && blockPosition.z === 0 && blockPosition.y === 63) return grassAt(blockPosition);
+      if (blockPosition.y >= 64) return airAt(blockPosition);
+      if (blockPosition.y >= 50 && blockPosition.y <= 51 && Math.abs(blockPosition.x) <= 2 && Math.abs(blockPosition.z) <= 2) return airAt(blockPosition);
+      if (blockPosition.y <= 63) return stoneAt(blockPosition);
+      return airAt(blockPosition);
+    }
+  };
+
+  const analysis = controller.analyzeNavigationSituation(controller.bot.entity.position);
+
+  assert.equal(analysis.trapped, true);
+  assert.equal(analysis.kind, "subsurface_enclosure");
+  assert.equal(analysis.recommendedAction, "surface_escape");
+  assert.ok(analysis.sameLevelExitCount > 0);
+  assert.equal(analysis.subsurface.needsSurfaceRecovery, true);
+  assert.deepEqual(analysis.subsurface.surfaceExit, { x: 0, y: 64, z: 0 });
+  assert.equal(analysis.subsurface.surfaceExitRise, 14);
+});
+
+test("escapePit follows a detected surface escape route from underground", async () => {
+  const controller = createController({
+    gotoNear: async (x, y, z) => {
+      controller.bot.entity.position = new Vec3(x, y, z);
+      return true;
+    }
+  });
+  const stoneAt = (position) => ({ name: "stone", position, boundingBox: "block", diggable: true });
+  const grassAt = (position) => ({ name: "grass_block", position, boundingBox: "block", diggable: true });
+  const airAt = (position) => ({ name: "air", position, boundingBox: "empty", diggable: false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 50, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : position;
+      if (blockPosition.x === 4 && blockPosition.z === 0 && blockPosition.y === 63) return grassAt(blockPosition);
+      if (blockPosition.y >= 64) return airAt(blockPosition);
+      if (blockPosition.y >= 50 && blockPosition.y <= 51 && Math.abs(blockPosition.x) <= 2 && Math.abs(blockPosition.z) <= 2) return airAt(blockPosition);
+      if (blockPosition.y <= 63) return stoneAt(blockPosition);
+      return airAt(blockPosition);
+    }
+  };
+
+  const escaped = await controller.escapePit();
+
+  assert.equal(escaped, true);
+  assert.deepEqual({ x: controller.bot.entity.position.x, y: controller.bot.entity.position.y, z: controller.bot.entity.position.z }, { x: 0, y: 64, z: 0 });
+});
+
 test("descendSupportColumn digs the support block one level at a time", async () => {
   let trapped = true;
   let dugPosition = null;
@@ -4062,6 +4734,12 @@ test("forced task override switches normal decisions but keeps hard safety decis
     { type: "escape_hazard", reason: "damaging block" }
   );
   assert.equal(safetyDecision.type, "escape_hazard");
+
+  assert.equal(controller.clearCompletedForcedTask(normalDecision, false), null);
+  assert.equal(controller.getForcedTask().taskType, "hunt_food");
+  const cleared = controller.clearCompletedForcedTask(normalDecision, true);
+  assert.equal(cleared.taskType, "hunt_food");
+  assert.equal(controller.getForcedTask(), null);
 });
 
 test("priority tasks override normal decisions but not unrelated hard safety", () => {

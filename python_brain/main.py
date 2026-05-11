@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from typing import Any
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from .langgraph_agents.brain import LangGraphBrain
+try:
+    from .langchain_smart.brain import LangChainSmartBrain
+    _LANGCHAIN_IMPORT_ERROR: Exception | None = None
+except ModuleNotFoundError as exc:
+    LangChainSmartBrain = None  # type: ignore[assignment]
+    _LANGCHAIN_IMPORT_ERROR = exc
+
+from .brain import SmartBrain
 from .config import BrainConfig
 from .llm_client import LLMClient
 from .models import BrainRequest, PlanResponse
@@ -21,21 +29,35 @@ logging.getLogger("uvicorn.access").disabled = True
 logger = logging.getLogger("python_brain")
 
 
+def create_brain(cfg: BrainConfig, client: LLMClient) -> tuple[Any, str]:
+    if LangChainSmartBrain is not None:
+        return LangChainSmartBrain(cfg, client), "langchain_multi_agent"
+
+    logger.warning(
+        "LangChain smart brain unavailable; falling back to SmartBrain: %s",
+        _LANGCHAIN_IMPORT_ERROR,
+    )
+    return SmartBrain(cfg, client), "smartbrain_fallback"
+
+
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = BrainConfig()
     http = httpx.AsyncClient(timeout=cfg.llm_timeout_s)
     client = LLMClient(cfg, http)
+    brain, brain_runtime = create_brain(cfg, client)
     app.state.cfg = cfg
     app.state.client = client
-    app.state.brain = LangGraphBrain(cfg, client)
+    app.state.brain = brain
+    app.state.brain_runtime = brain_runtime
     logger.info(
-        "Python Smart Brain started on %s:%d | model=%s | llm=%s | parallel=%s",
+        "Python Smart Brain started on %s:%d | model=%s | llm=%s | parallel=%s | runtime=%s",
         cfg.host,
         cfg.port,
         cfg.llm_model,
         "enabled" if cfg.llm_enabled else "disabled",
         cfg.parallel_agents,
+        brain_runtime,
     )
     yield
     await client.aclose()
@@ -54,7 +76,13 @@ app.add_middleware(
 @app.get("/health")
 async def health(request: Request):
     cfg: BrainConfig = request.app.state.cfg
-    return {"status": "ok", "service": "python_brain", "llmEnabled": cfg.llm_enabled, "parallelAgents": cfg.parallel_agents}
+    return {
+        "status": "ok",
+        "service": "python_brain",
+        "llmEnabled": cfg.llm_enabled,
+        "parallelAgents": cfg.parallel_agents,
+        "brainRuntime": getattr(request.app.state, "brain_runtime", "unknown"),
+    }
 
 
 @app.get("/config")
@@ -76,7 +104,7 @@ async def agents_info():
 
 @app.post("/plan", response_model=PlanResponse)
 async def plan(request_payload: BrainRequest, request: Request):
-    brain: SmartBrain = request.app.state.brain
+    brain = request.app.state.brain
     try:
         return await brain.plan(request_payload)
     except Exception as exc:

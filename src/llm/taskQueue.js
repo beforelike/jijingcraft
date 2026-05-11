@@ -43,6 +43,7 @@ class LlmTaskQueue {
     this.enabled = Boolean(options.taskQueueEnabled);
     this.maxQueuedTasks = Math.max(1, Number(options.maxQueuedTasks ?? 5));
     this.maxAgeMs = Math.max(1000, Number(options.taskQueueMaxAgeMs ?? 300000));
+    this.maxCurrentAgeMs = Math.max(1000, Number(options.taskQueueCurrentMaxAgeMs ?? options.maxCurrentAgeMs ?? this.maxAgeMs));
     this.queueableTasks = new Set(options.queueableTasks ?? DEFAULT_QUEUEABLE_TASKS);
     this.activePlan = null;
     this.queue = [];
@@ -62,6 +63,7 @@ class LlmTaskQueue {
 
   enqueuePlan(plan = {}, metadata = {}) {
     if (!this.enabled) return this.reject("task_queue_disabled");
+    const releasedCurrent = this.releaseStaleCurrent(Date.now(), "current_task_stale_before_enqueue");
     if (this.current) return this.reject("task_in_progress", { currentTask: this.current.type });
     if (!plan || !Array.isArray(plan.tasks) || plan.tasks.length === 0) return this.reject("empty_plan");
 
@@ -88,8 +90,8 @@ class LlmTaskQueue {
     this.queue = tasks;
     this.current = null;
     this.completed = [];
-    this.lastEvent = { type: "accepted", reason: "plan_queued", taskCount: tasks.length, skippedTasks: unsafeTasks, at: createdAt };
-    return { accepted: true, reason: "plan_queued", taskCount: tasks.length, skippedTasks: unsafeTasks, planId, status: this.getStatus() };
+    this.lastEvent = { type: "accepted", reason: "plan_queued", taskCount: tasks.length, skippedTasks: unsafeTasks, releasedCurrent: releasedCurrent ? { ...releasedCurrent } : null, at: createdAt };
+    return { accepted: true, reason: "plan_queued", taskCount: tasks.length, skippedTasks: unsafeTasks, planId, releasedCurrent, status: this.getStatus() };
   }
 
   pruneExpired(now = Date.now()) {
@@ -100,13 +102,26 @@ class LlmTaskQueue {
     return true;
   }
 
+  releaseStaleCurrent(now = Date.now(), reason = "current_task_stale", details = {}) {
+    if (!this.current?.startedAt) return null;
+    const startedAt = Date.parse(this.current.startedAt);
+    if (!Number.isFinite(startedAt) || now - startedAt <= this.maxCurrentAgeMs) return null;
+    return this.failCurrent(reason, {
+      ...details,
+      ageMs: now - startedAt,
+      maxCurrentAgeMs: this.maxCurrentAgeMs
+    });
+  }
+
   peek(now = Date.now()) {
     this.pruneExpired(now);
+    this.releaseStaleCurrent(now);
     return this.current ?? this.queue[0] ?? null;
   }
 
   startNext(details = {}) {
     this.pruneExpired();
+    this.releaseStaleCurrent(Date.now(), "current_task_stale_before_start", details);
     if (this.current) return this.current;
     const task = this.queue.shift();
     if (!task) return null;
@@ -136,8 +151,8 @@ class LlmTaskQueue {
     return task;
   }
 
-  failCurrent(reason = "failed") {
-    return this.completeCurrent("failed", { reason });
+  failCurrent(reason = "failed", details = {}) {
+    return this.completeCurrent("failed", typeof reason === "object" ? reason : { ...details, reason });
   }
 
   skipNext(reason = "skipped", details = {}) {
@@ -177,6 +192,7 @@ class LlmTaskQueue {
     return {
       enabled: this.enabled,
       active: Boolean(this.activePlan),
+      maxCurrentAgeMs: this.maxCurrentAgeMs,
       plan: this.activePlan ? { ...this.activePlan } : null,
       currentTask: this.current ? { ...this.current } : null,
       pendingTasks: this.queue.map((task) => ({ ...task })),

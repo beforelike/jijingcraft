@@ -4,13 +4,12 @@ const { Vec3 } = require("vec3");
 const { AgentOrchestrator } = require("../agents/agentOrchestrator");
 const { BehaviorExecutionQueue } = require("../behavior/behaviorExecutionQueue");
 const { ExecutableBehaviorTreeRunner } = require("../behavior/executableBehaviorTree");
-const { PriorityScheduler } = require("../behavior/PriorityScheduler");
-const { ActionExecutor } = require("../behavior/ActionExecutor");
 const { collectBlockSearchNames, placementFaceOrder } = require("../knowledge/mineflayerActionPatterns");
 const { PythonBrainClient } = require("../llm/pythonBrainClient");
 const { LlmTaskQueue } = require("../llm/taskQueue");
 const { listAllowedTasks } = require("../knowledge/survivalSkills");
 const { skillEnvelopeForDecision } = require("../knowledge/skillPlanner");
+const { isFallingBlockName } = require("../knowledge/minecraftWikiKnowledge");
 const { PriorityTaskQueue } = require("./priorityTaskQueue");
 const {
   ADVANCED_MATERIAL_ITEMS,
@@ -83,6 +82,15 @@ const HARD_SAFETY_TASKS = new Set(["escape_hazard", "escape_pit", "descend_from_
 const RULE_BOUND_QUEUE_TASKS = new Set([...HARD_SAFETY_TASKS, "wait_out_night", "hold_position"]);
 const LLM_ADVISORY_ONLY_RULES = new Set(["escape_hazard", "escape_pit", "descend_from_platform", "evade_hostiles", "defend_shelter", "defend_self", "wait_out_night", "hold_position"]);
 const PASSIVE_RULE_HOLD_TASKS = new Set(["wait_out_night", "hold_position"]);
+const PROGRESS_WATCHED_TASKS = new Set([
+  "collect_wood",
+  "collect_stone",
+  "collect_building_materials",
+  "collect_wool",
+  "mine_advanced_materials",
+  "hunt_food",
+  "explore"
+]);
 const ALLOWED_FORCED_TASKS = new Set(listAllowedTasks());
 const WATER_EXIT_FIRST_TASKS = new Set([
   "wait_out_night",
@@ -141,13 +149,7 @@ class SurvivalController {
     this.llmPlanner = options.llmPlanner ?? null;
     this.taskQueue = options.taskQueue ?? new LlmTaskQueue(this.config.llm ?? {});
     this.behaviorQueue = options.behaviorQueue ?? new BehaviorExecutionQueue(this.config.behaviorTrees ?? {});
-    this.priorityScheduler = options.priorityScheduler ?? new PriorityScheduler({
-      ...this.config.behaviorTrees ?? {},
-      maxPending: 8,
-      maxPerType: 2,
-      maxRetries: 3,
-    });
-    this.actionExecutor = options.actionExecutor ?? new ActionExecutor(this.bot);
+    this.priorityScheduler = options.priorityScheduler ?? null;
     this.behaviorTreeRunner = options.behaviorTreeRunner ?? new ExecutableBehaviorTreeRunner();
     this.agentOrchestrator = options.agentOrchestrator ?? new AgentOrchestrator(this.config.agents ?? {});
     this.agentStatus = this.agentOrchestrator?.getStatus?.() ?? null;
@@ -181,6 +183,7 @@ class SurvivalController {
     this.handlePhysicsTick = null;
     this.lastHealth = null;
     this.lastOxygenEscapeAt = 0;
+    this.lastFallingBlockEscapeAt = 0;
     this.lifecycleState = "active";
     this.regionalTerrainCache = null;
     this.lastExplorationMemoryAt = 0;
@@ -193,6 +196,7 @@ class SurvivalController {
     this.forcedTask = null;
     this.taskTrace = null;
     this.taskTraceSequence = 0;
+    this.taskProgressWatch = null;
     this.taskFeedback = {
       recentFailures: [],
       blockedTasks: {},
@@ -296,6 +300,13 @@ class SurvivalController {
     };
   }
 
+  clearCompletedForcedTask(decision, taskCompleted) {
+    if (!taskCompleted || !decision?.forced) return null;
+    const forcedTask = this.getForcedTask();
+    if (!forcedTask || forcedTask.taskType !== decision.type) return null;
+    return this.clearForcedTask("completed");
+  }
+
   insertPriorityTask(taskType, options = {}) {
     const task = this.priorityTaskQueue.insert(taskType, options);
     this.logger.warn(`task_queue=insert_priority; task=${task.type}; priority=${task.priority}; source=${task.source}; reason=${task.reason}`);
@@ -332,9 +343,7 @@ class SurvivalController {
   }
 
   getBehaviorQueueStatus() {
-    const legacy = this.behaviorQueue?.getStatus?.() ?? null;
-    const scheduler = this.priorityScheduler?.getStatus?.() ?? null;
-    return { legacy, scheduler };
+    return this.behaviorQueue?.getStatus?.() ?? null;
   }
 
   getFailureReportsForPlanner() {
@@ -608,6 +617,7 @@ class SurvivalController {
       food: snapshot?.food ?? null,
       position: snapshot?.position ?? null
     });
+    this.resetTaskProgressWatch(decision, snapshot);
   }
 
   publishTaskTrace() {
@@ -623,6 +633,7 @@ class SurvivalController {
       invalidPositionTicks: this.invalidPositionTicks,
       lastAction: this.lastAction,
       taskTrace: this.taskTrace,
+      taskProgress: this.getTaskProgressStatus(),
       forcedTask: this.getForcedTask(),
       taskFeedback: this.getTaskFeedbackStatus(),
       testTasks: this.getTestTaskStatus(),
@@ -746,6 +757,7 @@ class SurvivalController {
   checkBusyWatchdog() {
     this.publishControllerState();
     if (this.emergencyBusy || !this.taskTrace) return false;
+    if (this.checkTaskProgressWatch()) return true;
     const now = Date.now();
     const updatedAt = Date.parse(this.taskTrace.updatedAt ?? "");
     const traceAgeMs = Number.isFinite(updatedAt) ? now - updatedAt : 0;
@@ -789,6 +801,157 @@ class SurvivalController {
     }
     this.publishControllerState();
     return true;
+  }
+
+  resetTaskProgressWatch(decision = {}, snapshot = {}) {
+    const taskType = decision?.type ?? "unknown";
+    const now = Date.now();
+    const position = this.cloneValidPosition(this.bot?.entity?.position) ?? this.cloneValidPosition(snapshot?.position);
+    this.taskProgressWatch = {
+      taskTraceId: this.taskTrace?.id ?? null,
+      taskType,
+      status: PROGRESS_WATCHED_TASKS.has(taskType) ? "watching" : "ignored",
+      reason: null,
+      startedAt: now,
+      lastProgressAt: now,
+      lastCheckedAt: now,
+      lastPosition: position,
+      lastInventorySignature: this.taskProgressInventorySignature(taskType),
+      lastPhaseKey: this.taskProgressPhaseKey(),
+      noProgressMs: 0,
+      interrupted: false,
+      updatedAt: new Date(now).toISOString()
+    };
+    return this.taskProgressWatch;
+  }
+
+  taskProgressPhaseKey() {
+    if (!this.taskTrace) return "none";
+    const phases = Array.isArray(this.taskTrace.phaseEvents) ? this.taskTrace.phaseEvents : [];
+    const lastPhase = phases[phases.length - 1] ?? null;
+    return [this.taskTrace.activePhaseId ?? "none", phases.length, lastPhase?.id ?? "none", lastPhase?.status ?? "none"].join(":");
+  }
+
+  taskProgressInventorySignature(taskType) {
+    if (!this.bot?.inventory) return "inventory_unavailable";
+    const inventory = inventoryFromBot(this.bot);
+    if (taskType === "collect_stone") return `stone=${countItems(inventory, ["cobblestone", "stone", "deepslate", "cobbled_deepslate"])}`;
+    if (taskType === "collect_wood") return `logs=${countItems(inventory, LOG_BLOCKS)}`;
+    if (taskType === "collect_building_materials") return `building=${buildingMaterialCount(inventory)}`;
+    if (taskType === "collect_wool") return `wool=${countItems(inventory, WOOL_ITEMS)}`;
+    if (taskType === "mine_advanced_materials") return `advanced=${countItems(inventory, ADVANCED_MATERIAL_ITEMS)}`;
+    if (taskType === "hunt_food") return `food=${countItems(inventory, FOOD_ITEMS)}`;
+    return `items=${Object.values(inventory).reduce((total, value) => total + (Number(value) || 0), 0)}`;
+  }
+
+  checkTaskProgressWatch(now = Date.now()) {
+    const watch = this.taskProgressWatch;
+    if (!watch || watch.taskTraceId !== this.taskTrace?.id || watch.status === "ignored") return false;
+    if (watch.interrupted || this.taskTrace?.status !== "running") return false;
+
+    const taskType = this.taskTrace?.taskType ?? this.currentDecisionType ?? watch.taskType;
+    if (!PROGRESS_WATCHED_TASKS.has(taskType)) return false;
+
+    const currentPosition = this.cloneValidPosition(this.bot?.entity?.position);
+    const inventorySignature = this.taskProgressInventorySignature(taskType);
+    const phaseKey = this.taskProgressPhaseKey();
+    const moved = currentPosition && watch.lastPosition
+      ? this.distanceBetweenPositions(currentPosition, watch.lastPosition)
+      : 0;
+    const minMove = Math.max(0.1, Number(this.config.survival?.taskProgressMinDistance) || 0.45);
+    const madeProgress = moved >= minMove
+      || inventorySignature !== watch.lastInventorySignature
+      || phaseKey !== watch.lastPhaseKey;
+
+    if (madeProgress) {
+      watch.status = "watching";
+      watch.reason = null;
+      watch.lastProgressAt = now;
+      watch.lastPosition = currentPosition ?? watch.lastPosition;
+      watch.lastInventorySignature = inventorySignature;
+      watch.lastPhaseKey = phaseKey;
+      watch.noProgressMs = 0;
+      watch.lastCheckedAt = now;
+      watch.updatedAt = new Date(now).toISOString();
+      return false;
+    }
+
+    watch.noProgressMs = now - watch.lastProgressAt;
+    watch.lastCheckedAt = now;
+    watch.updatedAt = new Date(now).toISOString();
+    const thresholdMs = Math.max(5000, Number(this.config.survival?.taskNoProgressMs) || (taskType === "collect_stone" ? 18000 : 22000));
+    if (watch.noProgressMs < thresholdMs) return false;
+
+    watch.status = "stuck";
+    watch.reason = "no_movement_or_inventory_progress";
+    watch.interrupted = true;
+    const position = currentPosition ?? watch.lastPosition ?? this.bot?.entity?.position;
+    const details = {
+      taskType,
+      target: this.taskTrace?.activePhaseId ?? taskType,
+      noProgressMs: watch.noProgressMs,
+      thresholdMs,
+      activePhaseId: this.taskTrace?.activePhaseId ?? null,
+      activePhaseLabel: this.taskTrace?.activePhaseLabel ?? null,
+      inventorySignature,
+      forceBlock: true
+    };
+    this.logger.warn(`control_watchdog=task_no_progress; task=${taskType}; noProgressMs=${watch.noProgressMs}; phase=${details.activePhaseId ?? "none"}; pos=${this.formatPosition(position)}`);
+    this.recordTaskObservation("watchdog", "task made no movement or inventory progress", details, "warn");
+    this.recordModeLog("supervision", "task_no_progress", {
+      ...details,
+      reason: watch.reason,
+      outcome: "interrupted"
+    }, "warn");
+    this.recordTaskFeedbackFailure(taskType, "no_progress_stuck", position, details);
+    this.markCurrentActionInterrupted(5000);
+    this.resetMotion();
+    void this.cancelCollectTask?.();
+    this.releaseCurrentQueuedWork("task_no_progress", details);
+    this.finishTaskTrace("failed", { decision: taskType, reason: "no_progress_stuck", noProgressMs: watch.noProgressMs });
+    this.forcePlannerAfterTaskFeedback(taskType, "no_progress_stuck");
+    this.publishControllerState();
+    return true;
+  }
+
+  forcePlannerAfterTaskFeedback(taskType, reason) {
+    if (!this.llmPlanner?.shouldRun) return false;
+    try {
+      const snapshot = this.hasValidPosition(this.bot?.entity?.position) ? this.createSnapshot() : this.lastPublishContext?.snapshot;
+      if (!snapshot) return false;
+      this.maybeStartPlannerDryRun({
+        snapshot,
+        progress: this.lastPublishContext?.progress ?? null,
+        memory: this.memory,
+        decision: { type: taskType, reason },
+        skillEnvelope: null,
+        dimension: this.currentDimension(),
+        controller: this.buildControllerState(),
+        force: true
+      });
+      return true;
+    } catch (error) {
+      this.logger.debug?.(`planner force after task feedback skipped: ${error.message}`);
+      return false;
+    }
+  }
+
+  getTaskProgressStatus() {
+    const watch = this.taskProgressWatch;
+    if (!watch) return null;
+    return {
+      taskType: watch.taskType ?? null,
+      status: watch.status ?? "unknown",
+      reason: watch.reason ?? null,
+      startedAt: watch.startedAt ? new Date(watch.startedAt).toISOString() : null,
+      lastProgressAt: watch.lastProgressAt ? new Date(watch.lastProgressAt).toISOString() : null,
+      updatedAt: watch.updatedAt ?? null,
+      noProgressMs: Math.max(0, Math.round(Number(watch.noProgressMs) || 0)),
+      interrupted: Boolean(watch.interrupted),
+      position: this.feedbackPosition(watch.lastPosition),
+      inventorySignature: watch.lastInventorySignature ?? null,
+      phaseKey: watch.lastPhaseKey ?? null
+    };
   }
 
   releaseCurrentQueuedWork(reason = "runtime_interrupted", details = {}) {
@@ -1127,7 +1290,9 @@ class SurvivalController {
       nearbyLogs: nearbyLogs.slice(0, 6),
       exactLocal,
       regional,
-      descent
+      descent,
+      navigation: navigationAnalysis ? this.navigationTraceDetails(navigationAnalysis) : null,
+      subsurface: navigationAnalysis?.subsurface ?? null
     };
   }
 
@@ -1346,7 +1511,8 @@ class SurvivalController {
       safeStandCount: terrain.exactLocal.safeStandCount,
       waterCount: terrain.exactLocal.waterCount,
       hazardCount: terrain.exactLocal.hazardCount,
-      groundCounts: terrain.exactLocal.groundCounts
+      groundCounts: terrain.exactLocal.groundCounts,
+      subsurface: terrain.subsurface ?? null
     } : null;
     exploration.lastRegionalScan = terrain.regional ? {
       radius: terrain.regional.radius,
@@ -1450,12 +1616,15 @@ class SurvivalController {
 
     const blockPolicy = this.taskFeedbackBlockPolicy(taskType);
     const recentFailures = this.recentFailureCountForTask(taskType, blockPolicy.windowMs, { reason, action });
-    if (recentFailures >= blockPolicy.threshold && !HARD_SAFETY_TASKS.has(taskType) && this.isTaskFeedbackBlockableFailure(action, reason, details)) {
+    const shouldBlock = (details.forceBlock === true || recentFailures >= blockPolicy.threshold)
+      && !HARD_SAFETY_TASKS.has(taskType)
+      && this.isTaskFeedbackBlockableFailure(action, reason, details);
+    if (shouldBlock) {
       const recoveryTasks = this.recoveryTasksForBlockedTask(taskType);
       this.taskFeedback.blockedTasks[taskType] = {
         taskType,
         reason,
-        failureCount: recentFailures,
+        failureCount: Math.max(recentFailures, details.forceBlock === true ? blockPolicy.threshold : 0),
         lastAction: action,
         lastTarget: details.target ?? null,
         recoveryTasks,
@@ -1753,6 +1922,7 @@ class SurvivalController {
     }
     const hazard = this.findNearbyDamagingBlock(this.bot.entity.position, 1.5);
     const nearbyHazard = hazard ?? this.findNearbyDamagingBlockLoose(this.bot.entity.position, 2.8);
+    const fallingBlockHazard = this.findFallingBlockEntrapment(this.bot.entity.position);
     const hostile = this.nearestEntity((entity) => HOSTILE_MOBS.has(entity.name), this.config.survival.safeModeThreatRadius);
 
     if (this.shouldContinuePlatformDescentDuringHostileDamage(hostile, currentHealth)) {
@@ -1770,7 +1940,7 @@ class SurvivalController {
       return;
     }
 
-    if (!nearbyHazard && !hostile && this.isLikelyStarvationDamage(previousHealth, currentHealth)) {
+    if (!nearbyHazard && !fallingBlockHazard && !hostile && this.isLikelyStarvationDamage(previousHealth, currentHealth)) {
       this.logger.warn(`emergency=starvation_damage; hp=${previousHealth}->${currentHealth}; food=${this.bot.food ?? "unknown"}; holding recovery without unknown-damage reposition`);
       this.markCurrentActionInterrupted(2000);
       this.pause(500);
@@ -1784,8 +1954,9 @@ class SurvivalController {
       return;
     }
 
-    if ((this.hazardEscapeBusy || this.currentDecisionType === "escape_hazard") && nearbyHazard) {
-      this.logger.warn(`emergency=damage_block; block=${nearbyHazard.name}; distance=${nearbyHazard.distance.toFixed(1)}; already_escaping`);
+    if ((this.hazardEscapeBusy || this.currentDecisionType === "escape_hazard") && (nearbyHazard || fallingBlockHazard)) {
+      const activeHazard = nearbyHazard ?? fallingBlockHazard;
+      this.logger.warn(`emergency=damage_block; block=${activeHazard.name}; distance=${Number(activeHazard.distance ?? 0).toFixed(1)}; already_escaping`);
       return;
     }
 
@@ -1807,9 +1978,21 @@ class SurvivalController {
         }, "warn");
         await this.escapeHazardBlock(nearbyHazard);
       }
+      if (!nearbyHazard && fallingBlockHazard) {
+        this.logger.warn(`emergency=falling_block_entrapment; block=${fallingBlockHazard.name}; reason=${fallingBlockHazard.reason}; escaping`);
+        this.recordModeLog("safety", "falling_block_escape", {
+          reason: "falling_block_entrapment",
+          outcome: "escape_started",
+          taskType: this.currentDecisionType ?? null,
+          target: fallingBlockHazard.name,
+          position: fallingBlockHazard.position,
+          hazardReason: fallingBlockHazard.reason
+        }, "warn");
+        await this.escapeFallingBlockEntrapment(fallingBlockHazard);
+      }
       if (hostile && this.hasValidPosition(this.bot.entity.position)) {
         await this.respondToHostileDamage(hostile, previousHealth, currentHealth);
-      } else if (!nearbyHazard && this.hasValidPosition(this.bot.entity.position)) {
+      } else if (!nearbyHazard && !fallingBlockHazard && this.hasValidPosition(this.bot.entity.position)) {
         await this.respondToUnknownDamage(previousHealth, currentHealth);
       }
     } finally {
@@ -1830,6 +2013,32 @@ class SurvivalController {
     if (!this.bot?.entity || !this.hasValidPosition(this.bot.entity.position)) return;
     this.bot.setControlState?.("sprint", false);
     if (this.emergencyBusy || this.hazardEscapeBusy) return;
+    const fallingBlockHazard = this.findFallingBlockEntrapment(this.bot.entity.position);
+    if (fallingBlockHazard) {
+      const now = Date.now();
+      if (now - this.lastFallingBlockEscapeAt < 1200) return;
+      this.lastFallingBlockEscapeAt = now;
+      this.emergencyBusy = true;
+      this.markCurrentActionInterrupted(6000);
+      this.recordModeLog("safety", "realtime_falling_block_preempt", {
+        reason: "falling_block_entrapment",
+        outcome: "escape_started",
+        taskType: this.currentDecisionType ?? null,
+        target: fallingBlockHazard.name,
+        position: fallingBlockHazard.position,
+        hazardReason: fallingBlockHazard.reason
+      }, "warn");
+      this.clearQueuedPlanningWork("falling_block_preempt", { behavior: true, llm: true, priority: false, test: false });
+      this.cancelCollectTask()
+        .catch((error) => this.logger.debug?.("falling block preempt cancel failed", error.message))
+        .then(() => this.escapeFallingBlockEntrapment(fallingBlockHazard))
+        .catch((error) => this.logger.warn?.(`emergency=falling_block; escape_failed=${error.message}`))
+        .finally(() => {
+          this.emergencyBusy = false;
+          this.publishControllerState();
+        });
+      return;
+    }
     const threshold = this.config?.survival?.lowOxygenThreshold ?? 8;
     const shouldEscape = this.shouldEscapeForLowOxygen(this.bot.entity.position, threshold);
     if (!shouldEscape) return;
@@ -1918,6 +2127,12 @@ class SurvivalController {
     const origin = this.bot.entity.position;
     this.logger.warn(`emergency=unknown_damage; hp=${previousHealth}->${currentHealth}; repositioning; ${this.describeImmediateEnvironment(origin)}`);
     if (!this.hasValidPosition(origin)) return;
+
+    if (this.isBodyInWater(origin) && this.findOverheadIceBlock(origin, 3)) {
+      this.logger.warn(`emergency=unknown_damage; treating water/ice damage as air recovery; pos=${this.formatPosition(origin)}`);
+      const recovered = await this.breakOverheadIceForAir({ reason: "unknown_damage_under_ice" });
+      if (recovered) return;
+    }
 
     const candidates = this.findNearbySafeStandPositions(origin, 6).slice(0, 3);
     for (const candidate of candidates) {
@@ -2056,8 +2271,15 @@ class SurvivalController {
           this.recordTaskFeedbackRecoverySuccess(ruleDecision.type, decision.type, { reason: decision.reason });
         }
         if (taskCompleted) this.recordTaskFeedbackSuccess(decision.type, { taskType: decision.type, target: "task_completed" });
+        if (!taskCompleted) {
+          this.recordTaskFeedbackFailure(decision.type, "postcondition_failed", this.bot.entity?.position, {
+            taskType: decision.type,
+            target: decision.target ?? "task_postcondition"
+          });
+        }
         if (taskCompleted) this.recordTaskResultToMapMemory(decision);
         this.finishTaskTrace(taskCompleted ? "completed" : "failed", { decision: decision.type });
+        this.clearCompletedForcedTask(decision, taskCompleted);
         if (decision.behaviorTreeQueued) {
           if (taskCompleted && this.shouldKeepPassiveBehaviorTreeOpen(decision, ruleDecision, snapshot)) {
             this.behaviorQueue.pause("passive_rule_still_active", { task: decision.type, ruleDecision: ruleDecision.type });
@@ -2661,24 +2883,16 @@ class SurvivalController {
         return;
       }
       this.discardSupersededPlannerTrees("llm_planner", "planner_superseded", { planId: result.plan.id ?? result.record?.timestamp ?? null });
-
-      // Enqueue via PriorityScheduler (primary) with BehaviorExecutionQueue fallback
-      const metadata = {
+      const behaviorResult = this.behaviorQueue.enqueuePlan(filteredPlan.plan, {
         source: "llm_planner",
         sourcePlanId: result.plan.id ?? result.record?.timestamp ?? null
-      };
-      const schedulerResult = this.priorityScheduler?.enqueuePlan?.(filteredPlan.plan, metadata)
-        ?? { accepted: false, reason: "scheduler_unavailable" };
-      // Also feed legacy queue for backward compat
-      const behaviorResult = this.behaviorQueue?.enqueuePlan?.(filteredPlan.plan, metadata)
-        ?? { accepted: false, reason: "legacy_queue_unavailable" };
-      const enqueueResult = schedulerResult.accepted ? schedulerResult : behaviorResult;
+      });
       this.llmPlanner?.noteQueueDecision?.({
-        accepted: Boolean(enqueueResult.accepted),
-        reason: enqueueResult.reason,
-        taskCount: enqueueResult.taskCount ?? 0,
-        skippedTasks: enqueueResult.rejected ?? behaviorResult.rejected ?? [],
-        planId: enqueueResult.planId ?? null,
+        accepted: Boolean(behaviorResult.accepted),
+        reason: behaviorResult.reason,
+        taskCount: behaviorResult.taskCount ?? 0,
+        skippedTasks: behaviorResult.rejected ?? [],
+        planId: behaviorResult.planId ?? null,
         droppedTaskCount: filteredPlan.droppedTaskCount ?? 0,
         status: behaviorResult.status ?? this.behaviorQueue?.getStatus?.() ?? null
       });
@@ -2922,6 +3136,66 @@ class SurvivalController {
     };
   }
 
+  buildObservedPlayerState() {
+    const game = this.bot?.game ?? {};
+    const abilities = this.bot?.abilities ?? this.bot?.entity?.abilities ?? null;
+    const attributes = this.bot?.entity?.attributes ?? {};
+    const movementSpeed = attributes["minecraft:generic.movement_speed"]
+      ?? attributes["generic.movement_speed"]
+      ?? attributes.movement_speed
+      ?? null;
+    const activeEffects = this.activeEffectSummary();
+    const gameMode = game.gameMode ?? game.gamemode ?? game.mode ?? null;
+    const difficulty = game.difficulty ?? game.difficultyName ?? null;
+    const warnings = [];
+
+    if (gameMode !== null && gameMode !== undefined && ![0, "0", "survival"].includes(gameMode)) {
+      warnings.push({ code: "non_survival_gamemode", value: gameMode });
+    }
+    if (abilities?.flying || abilities?.mayfly || abilities?.invulnerable) {
+      warnings.push({
+        code: "special_ability_enabled",
+        flying: Boolean(abilities.flying),
+        mayfly: Boolean(abilities.mayfly),
+        invulnerable: Boolean(abilities.invulnerable)
+      });
+    }
+    if (activeEffects.length > 0) {
+      warnings.push({ code: "active_effects_present", effects: activeEffects.map((effect) => effect.name ?? effect.id) });
+    }
+
+    return {
+      gameMode,
+      difficulty,
+      hardcore: game.hardcore ?? null,
+      activeEffects,
+      abilities: abilities ? {
+        flying: Boolean(abilities.flying),
+        mayfly: Boolean(abilities.mayfly),
+        invulnerable: Boolean(abilities.invulnerable),
+        instabuild: Boolean(abilities.instabuild)
+      } : null,
+      attributes: {
+        movementSpeed: movementSpeed && typeof movementSpeed === "object" ? {
+          value: movementSpeed.value ?? movementSpeed.base ?? null,
+          modifiers: Array.isArray(movementSpeed.modifiers) ? movementSpeed.modifiers.length : null
+        } : movementSpeed
+      },
+      warnings
+    };
+  }
+
+  activeEffectSummary() {
+    const effects = this.bot?.entity?.effects ?? this.bot?.effects ?? {};
+    if (!effects || typeof effects !== "object") return [];
+    return Object.entries(effects).map(([id, effect]) => ({
+      id,
+      name: effect?.name ?? effect?.displayName ?? id,
+      amplifier: effect?.amplifier ?? null,
+      duration: effect?.duration ?? null
+    })).filter((effect) => effect.name);
+  }
+
   createSnapshot() {
     const position = this.bot.entity.position;
     this.refreshKnownCraftingTables(position);
@@ -2945,6 +3219,7 @@ class SurvivalController {
       food: this.bot.food ?? 20,
       oxygen: this.bot.oxygenLevel ?? 20,
       environmentHazard: this.findNearbyDamagingBlock(position, 1.5),
+      fallingBlockHazard: this.findFallingBlockEntrapment(position),
       navigationTrap: navigationAnalysis.trapped,
       navigationAnalysis,
       inventory: inventoryFromBot(this.bot),
@@ -2958,6 +3233,7 @@ class SurvivalController {
       isBodyInWater: this.isBodyInWater(position),
       timeSinceOnGround: this.bot.entity.timeSinceOnGround || 0,
       experience: this.bot.experience,
+      playerState: this.buildObservedPlayerState(),
       progress: {
         ...this.progressState,
         hasCraftingTable: this.hasCraftingTableAccess(position),
@@ -3602,6 +3878,26 @@ class SurvivalController {
     }
 
     this.markTaskPhase("choose_route", "选择脱困路线", "completed", traceDetails);
+    if (analysis.recommendedAction === "surface_escape" && analysis.subsurface?.surfaceExit) {
+      const surfaceExit = new Vec3(analysis.subsurface.surfaceExit.x, analysis.subsurface.surfaceExit.y, analysis.subsurface.surfaceExit.z);
+      this.markTaskPhase("surface_path", "尝试回到开阔地表", "active", { target: surfaceExit, rise: analysis.subsurface.surfaceExitRise });
+      this.logger.warn(`action=escape_pit; mode=surface_escape; target=${this.formatPosition(surfaceExit)}; rise=${analysis.subsurface.surfaceExitRise ?? "unknown"}`);
+      const reachedSurface = await this.gotoNear(surfaceExit.x, surfaceExit.y, surfaceExit.z, 1, {
+        label: "escape_pit_surface_exit",
+        timeoutMs: Math.min(Math.max(this.config.survival.actionTimeoutMs, 8000), 14000),
+        learnPosition: surfaceExit,
+        target: "surface_exit",
+        radius: 10
+      });
+      if (reachedSurface && !this.isLikelyPitPosition(this.bot.entity.position)) {
+        this.markTaskPhase("surface_path", "尝试回到开阔地表", "completed", { target: surfaceExit, current: this.bot.entity.position });
+        this.markTaskPhase("verify", "验证已离开陷阱", "completed", { current: this.bot.entity.position });
+        this.recordActionSuccess("escape_pit", this.bot.entity.position, { target: "surface_exit" });
+        return true;
+      }
+      this.markTaskPhase("surface_path", "尝试回到开阔地表", "failed", { target: surfaceExit, current: this.bot.entity.position, reached: reachedSurface });
+    }
+
     if (analysis.recommendedAction === "controlled_descent") {
       const descentSteps = Math.min(Math.max(analysis.supportColumnDepth ?? 8, 8), 20);
       const descended = await this.descendSupportColumn(descentSteps, analysis);
@@ -3632,9 +3928,12 @@ class SurvivalController {
     }
 
     this.markTaskPhase("carve_stair", "开凿上升阶梯", "active", { routeOptions: analysis.routeOptions });
+    const stairSteps = analysis.recommendedAction === "surface_escape"
+      ? Math.min(Math.max(Number(analysis.subsurface?.surfaceExitRise ?? 6), 6), 16)
+      : 5;
     for (const direction of this.escapePitDirections(origin, rim)) {
       this.logger.warn(`action=escape_pit; carving stair direction=${this.formatPosition(direction)}`);
-      const carved = await this.carveAscendingEscapeStair(direction, 5);
+      const carved = await this.carveAscendingEscapeStair(direction, stairSteps);
       if (carved && !this.isLikelyPitPosition(this.bot.entity.position)) {
         this.markTaskPhase("carve_stair", "开凿上升阶梯", "completed", { direction, current: this.bot.entity.position });
         this.markTaskPhase("verify", "验证已离开陷阱", "completed", { current: this.bot.entity.position });
@@ -3710,6 +4009,45 @@ class SurvivalController {
     addDirection(this.cardinalDirection());
     for (const direction of CARDINAL_DIRECTIONS) addDirection(direction);
     return directions;
+  }
+
+  async escapeFallingBlockEntrapment(hazard = null) {
+    if (this.hazardEscapeBusy) return false;
+    this.hazardEscapeBusy = true;
+    try {
+      if (!this.hasValidPosition(this.bot.entity?.position)) return false;
+      this.resetMotion();
+      const origin = this.bot.entity.position;
+      const base = origin.floored();
+      this.logger.warn(`action=escape_falling_block; block=${hazard?.name ?? "unknown"}; reason=${hazard?.reason ?? "unknown"}; pos=${this.formatPosition(origin)}`);
+
+      for (const position of [base.offset(0, 1, 0), base]) {
+        const block = this.bot.blockAt(position);
+        if (this.isFallingBlock(block)) {
+          await this.digBlockAt(position, { allowFallingBlockDig: true, allowFallingBlockSupport: true });
+        }
+      }
+
+      const current = this.bot.entity.position.floored();
+      if (this.isSafeStandPosition(current) && !this.hasFallingBlockCollapseRiskNearStand(current) && !this.findNearbyDamagingBlock(current, 1.2)) {
+        return true;
+      }
+
+      const safePosition = this.findNearbySafeStandPosition(origin, 8, { avoidFallingBlockCollapse: true });
+      if (safePosition) {
+        return this.gotoNear(safePosition.x, safePosition.y, safePosition.z, 1, {
+          label: "falling_block_escape",
+          timeoutMs: Math.min(this.config.survival.actionTimeoutMs, 7000),
+          learnPosition: safePosition,
+          target: hazard?.name ?? "falling_block",
+          radius: 8
+        });
+      }
+
+      return false;
+    } finally {
+      this.hazardEscapeBusy = false;
+    }
   }
 
   async escapeHazardBlock(hazard) {
@@ -3959,6 +4297,7 @@ class SurvivalController {
       this.recordActionFailure("escape_hazard_block", error.message, block.position, { target: block.name, radius: 3 });
       return false;
     }
+
   }
 
   isClearableDamagingPlant(blockName) {
@@ -4186,11 +4525,11 @@ class SurvivalController {
     return null;
   }
 
-  findNearbySafeStandPosition(origin, radius = 5) {
-    return this.findNearbySafeStandPositions(origin, radius)[0] ?? null;
+  findNearbySafeStandPosition(origin, radius = 5, options = {}) {
+    return this.findNearbySafeStandPositions(origin, radius, options)[0] ?? null;
   }
 
-  findNearbySafeStandPositions(origin, radius = 5) {
+  findNearbySafeStandPositions(origin, radius = 5, options = {}) {
     if (!this.hasValidPosition(origin)) return [];
     const base = origin.floored();
     const candidates = [];
@@ -4208,6 +4547,7 @@ class SurvivalController {
 
     return candidates
       .filter((candidate) => this.isSafeStandPosition(candidate) && !this.findNearbyDamagingBlock(candidate, 1.2))
+      .filter((candidate) => !options.avoidFallingBlockCollapse || !this.hasFallingBlockCollapseRiskNearStand(candidate))
       .sort((left, right) => this.distanceBetweenPositions(origin, left) - this.distanceBetweenPositions(origin, right));
   }
 
@@ -4842,19 +5182,14 @@ class SurvivalController {
   }
 
   async huntFood(decision = {}) {
-        // 清理过期黑名单
-        const now = Date.now();
-        if (!this._huntFoodUnreachableBlacklist) this._huntFoodUnreachableBlacklist = new Map();
-        for (const [id, entry] of this._huntFoodUnreachableBlacklist.entries()) {
-          if (entry.expiresAt < now) this._huntFoodUnreachableBlacklist.delete(id);
-        }
+    const now = Date.now();
+    if (!this._huntFoodUnreachableBlacklist) this._huntFoodUnreachableBlacklist = new Map();
+    for (const [id, entry] of this._huntFoodUnreachableBlacklist.entries()) {
+      if (entry.expiresAt < now) this._huntFoodUnreachableBlacklist.delete(id);
+    }
     const beforeFood = countItems(inventoryFromBot(this.bot), FOOD_ITEMS);
-    const parameters = this.taskParametersFromDecision(decision);
-    const requestedRadius = Number(parameters.searchRadius ?? parameters.radius);
-    const defaultSearchRadius = this.config.survival.foodSearchRadius ?? 48;
-    const searchRadius = Number.isFinite(requestedRadius) && requestedRadius > 0
-      ? Math.max(8, Math.min(96, requestedRadius))
-      : defaultSearchRadius;
+    const selectionOptions = this.huntFoodSelectionOptions(decision);
+    const { parameters, searchRadius, allowAquaticHunt, maxAquaticDistance, maxAquaticVerticalDelta, maxLandDistance } = selectionOptions;
     const explicitTarget = this.targetPositionFromDecision(decision);
     const requestedTarget = typeof parameters.target === "string"
       ? parameters.target.toLowerCase()
@@ -4862,16 +5197,6 @@ class SurvivalController {
         ? parameters.animal.toLowerCase()
         : null;
     const lowFood = this.config.survival.lowFood ?? 14;
-    const criticalHealth = this.config.survival.criticalHealth ?? 8;
-    const allowAquaticHunt = parameters.allowAquaticHunt === true
-      || /aquatic|fish|salmon|cod/i.test(parameters.mode ?? "")
-      || (this.bot.food ?? 20) <= lowFood
-      || (this.bot.health ?? 20) <= criticalHealth;
-    const maxAquaticDistance = allowAquaticHunt ? Math.min(searchRadius, 48) : 4;
-    const maxAquaticVerticalDelta = allowAquaticHunt ? 6 : 2;
-    const maxLandDistance = ((this.bot.food ?? 20) <= lowFood || (this.bot.health ?? 20) <= criticalHealth)
-      ? Math.min(searchRadius, 24)
-      : searchRadius;
 
     if (this.isBodyInWater(this.bot?.entity?.position) && !allowAquaticHunt) {
       const leftWater = await this.leaveWaterForTask("hunt_food", { radius: 20, maxRise: 10, timeoutMs: 10000 });
@@ -4935,6 +5260,10 @@ class SurvivalController {
       this.markTaskPhase("plant_scan", "寻找可食用植物", "failed", { reason: "preferred_berries_unavailable_after_scan" });
     }
 
+    const openWaterSearchTarget = !animal && allowAquaticHunt
+      ? this.findOpenWaterFoodSearchTarget(this.bot.entity?.position, { radius: Math.min(searchRadius, 40) })
+      : null;
+
     if (!animal && explicitTarget) {
       this.markTaskPhase("approach_hint", "接近LLM给出的食物搜索坐标", "active", { position: explicitTarget, radius: searchRadius });
       const reachedHint = await this.gotoNear(explicitTarget.x, explicitTarget.y, explicitTarget.z, 5, {
@@ -4967,6 +5296,28 @@ class SurvivalController {
         const afterForageFood = countItems(inventoryFromBot(this.bot), FOOD_ITEMS);
         this.markTaskPhase("verify", "验证食物增加", "completed", { food: `${beforeFood}->${afterForageFood}`, source: "forage_food" });
         return true;
+      }
+      if (openWaterSearchTarget) {
+        this.markTaskPhase("water_food_search", "接近开放水面寻找鱼", "active", {
+          water: openWaterSearchTarget.waterPosition,
+          stand: openWaterSearchTarget.standPosition,
+          distance: openWaterSearchTarget.distance?.toFixed?.(1) ?? null
+        });
+        const movedToWater = await this.gotoNear(openWaterSearchTarget.standPosition.x, openWaterSearchTarget.standPosition.y, openWaterSearchTarget.standPosition.z, 2.2, {
+          label: "open_water_food_search",
+          timeoutMs: Math.min(Math.max(this.config.survival.actionTimeoutMs * 2, 12000), 20000),
+          learnPosition: openWaterSearchTarget.standPosition,
+          target: "open_water_food_search",
+          radius: Math.min(searchRadius, 40),
+          taskFeedback: false
+        });
+        this.markTaskPhase("water_food_search", "接近开放水面寻找鱼", movedToWater ? "completed" : "failed", {
+          moved: movedToWater,
+          water: openWaterSearchTarget.waterPosition,
+          stand: openWaterSearchTarget.standPosition
+        });
+        this.recordActionFailure("hunt_food", "open_water_search_reposition", openWaterSearchTarget.standPosition, { target: "open_water_food_search", radius: Math.min(searchRadius, 40), moved: movedToWater, taskFeedback: false });
+        return false;
       }
       this.markTaskPhase("fallback", "失败后探索/换目标", "active", { reason: "no_food_source_found" });
       this.logger.info("action=hunt_food; no nearby food mobs, exploring for animals");
@@ -5002,21 +5353,27 @@ class SurvivalController {
       this.recordActionFailure("hunt_food", "low_oxygen_escape", animal.position, { target: animal.name, radius: aquaticAnimal ? 5 : 8, taskFeedback: false });
       return false;
     }
-    const reachedAnimal = await this.gotoEntity(animal, approachRange, {
-      label: "hunt_food_target",
-      timeoutMs: aquaticAnimal
-        ? Math.min(Math.max(this.config.survival.actionTimeoutMs * 2, 9000), 14000)
-        : Math.min(this.config.survival.actionTimeoutMs, 9000),
-      segmentTimeoutMs: aquaticAnimal ? 650 : undefined,
-      learnPosition: animal.position,
-      target: animal.name,
-      radius: aquaticAnimal ? Math.min(Math.max(animalDistance, 8), maxAquaticDistance) : 8,
-      taskFeedback: false,
-      tolerance: aquaticAnimal ? 2.5 : 1.5,
-      abortOnLowOxygen: aquaticAnimal
-    });
+    const aquaticPursuitStartDistance = aquaticAnimal ? Math.min(Math.max(maxAquaticDistance, 16), 24) : null;
+    let reachedAnimal = false;
+    if (aquaticAnimal && animalDistance <= aquaticPursuitStartDistance) {
+      reachedAnimal = true;
+    } else {
+      reachedAnimal = await this.gotoEntity(animal, approachRange, {
+        label: "hunt_food_target",
+        timeoutMs: aquaticAnimal
+          ? Math.min(Math.max(this.config.survival.actionTimeoutMs, 5000), 8000)
+          : Math.min(this.config.survival.actionTimeoutMs, 9000),
+        segmentTimeoutMs: aquaticAnimal ? 650 : undefined,
+        learnPosition: animal.position,
+        target: animal.name,
+        radius: aquaticAnimal ? Math.min(Math.max(animalDistance, 8), maxAquaticDistance) : 8,
+        taskFeedback: false,
+        tolerance: aquaticAnimal ? 2.5 : 1.5,
+        abortOnLowOxygen: aquaticAnimal
+      });
+    }
 
-    const maxAttackDistance = aquaticAnimal ? 8 : 6;
+    const maxAttackDistance = aquaticAnimal ? aquaticPursuitStartDistance : 6;
     let attackTarget = this.bot.entities[animal.id] ?? animal;
     const currentAnimalDistance = this.hasValidPosition(attackTarget?.position) && this.hasValidPosition(this.bot.entity?.position)
       ? attackTarget.position.distanceTo(this.bot.entity.position)
@@ -5053,53 +5410,56 @@ class SurvivalController {
       return Boolean(foraged);
     }
 
-    const attackDeadline = Date.now() + this.config.survival.actionTimeoutMs;
     this.markTaskPhase("approach_animal", "接近动物", "completed", { target: attackTarget.name, distance: currentAnimalDistance.toFixed(1), strategy, mode: "entity_follow" });
     this.markTaskPhase("attack_animal", "攻击动物", "active", { target: attackTarget.name, timeoutMs: this.config.survival.actionTimeoutMs, strategy });
-    this.bot.pvp.attack(attackTarget);
-    try {
-      while (Date.now() < attackDeadline && this.bot.entities[animal.id]) {
-        attackTarget = this.bot.entities[animal.id] ?? attackTarget;
-        if (this.isLowOxygen()) {
-          this.logger.warn(`action=hunt_food; interrupted by low oxygen=${this.bot.oxygenLevel ?? "unknown"}`);
-          this.markTaskPhase("risk_response", "低氧撤离", "risk", { target: attackTarget.name, oxygen: this.bot.oxygenLevel ?? null, strategy });
-          this.recordTaskObservation("risk", "hunt_food interrupted by low oxygen", { target: attackTarget.name, oxygen: this.bot.oxygenLevel ?? null, position: this.feedbackPosition(this.bot.entity?.position) }, "warn");
-          this.bot.pvp.stop();
-          await this.escapeLowOxygen({ reason: "hunt_food_attack", target: attackTarget.name });
-          this.recordActionFailure("hunt_food", "low_oxygen_escape", attackTarget.position, { target: attackTarget.name, radius: aquaticAnimal ? 5 : 8, taskFeedback: false });
-          return false;
-        }
-        const threat = this.nearestEntity((entity) => HOSTILE_MOBS.has(entity.name), this.config.survival.threatRadius);
-        if (threat) {
-          this.logger.warn(`action=hunt_food; interrupted by ${threat.name}`);
-          this.markTaskPhase("risk_response", "躲避怪物或植物伤害", "risk", { threat: threat.name, distance: threat.position.distanceTo(this.bot.entity.position).toFixed(1) });
-          this.recordTaskObservation("risk", "hunt_food interrupted by hostile", { threat: threat.name, position: threat.position }, "warn");
-          this.bot.pvp.stop();
-          await this.panicRetreatFrom(threat, this.config.survival.panicRetreatMs);
-          this.recordActionFailure("hunt_food", "interrupted_by_hostile", threat.position, { target: threat.name, radius: this.config.survival.threatRadius });
-          return false;
-        }
-        const distance = this.hasValidPosition(attackTarget?.position) && this.hasValidPosition(this.bot.entity?.position)
-          ? attackTarget.position.distanceTo(this.bot.entity.position)
-          : Infinity;
-        if (this.hasValidPosition(attackTarget?.position)) {
-          await this.bot.lookAt?.(attackTarget.position.offset(0, 0.8, 0), true);
-        }
-        if (distance <= 4.5 && typeof this.bot.attack === "function") {
-          try {
-            this.bot.attack(attackTarget);
-          } catch (error) {
-            this.logger.debug("manual hunt attack failed", error.message);
-          }
-        }
-        await this.wait(500);
-      }
-    } finally {
-      this.bot.pvp.stop();
+    const attackResult = await this.pursueAndAttackFoodTarget(attackTarget, {
+      aquatic: Boolean(aquaticAnimal),
+      timeoutMs: this.config.survival.actionTimeoutMs,
+      manualSwimRange: aquaticAnimal ? Math.max(16, maxAttackDistance) : undefined,
+      strategy
+    });
+    if (!attackResult.ok && attackResult.reason === "low_oxygen_escape") {
+      const interruptedTarget = attackResult.target ?? attackTarget;
+      this.logger.warn(`action=hunt_food; interrupted by low oxygen=${this.bot.oxygenLevel ?? "unknown"}`);
+      this.markTaskPhase("risk_response", "低氧撤离", "risk", { target: interruptedTarget.name, oxygen: this.bot.oxygenLevel ?? null, strategy });
+      this.recordTaskObservation("risk", "hunt_food interrupted by low oxygen", { target: interruptedTarget.name, oxygen: this.bot.oxygenLevel ?? null, position: this.feedbackPosition(this.bot.entity?.position) }, "warn");
+      await this.escapeLowOxygen({ reason: "hunt_food_attack", target: interruptedTarget.name });
+      this.recordActionFailure("hunt_food", "low_oxygen_escape", interruptedTarget.position, { target: interruptedTarget.name, radius: aquaticAnimal ? 5 : 8, taskFeedback: false });
+      return false;
+    }
+    if (!attackResult.ok && attackResult.reason === "interrupted_by_hostile") {
+      const threat = attackResult.threat;
+      this.logger.warn(`action=hunt_food; interrupted by ${threat.name}`);
+      this.markTaskPhase("risk_response", "躲避怪物或植物伤害", "risk", { threat: threat.name, distance: threat.position.distanceTo(this.bot.entity.position).toFixed(1) });
+      this.recordTaskObservation("risk", "hunt_food interrupted by hostile", { threat: threat.name, position: threat.position }, "warn");
+      await this.panicRetreatFrom(threat, this.config.survival.panicRetreatMs);
+      this.recordActionFailure("hunt_food", "interrupted_by_hostile", threat.position, { target: threat.name, radius: this.config.survival.threatRadius });
+      return false;
+    }
+    if (!attackResult.ok) {
+      const failedTarget = attackResult.target ?? attackTarget;
+      this.markTaskPhase("attack_animal", "攻击动物", "failed", {
+        target: failedTarget?.name ?? animal.name,
+        reason: attackResult.reason ?? "hunt_target_not_killed",
+        manualAttackCount: attackResult.manualAttackCount ?? 0,
+        strategy
+      });
+      this.recordActionFailure("hunt_food", attackResult.reason ?? "hunt_target_not_killed", failedTarget?.position ?? animal.position, {
+        target: failedTarget?.name ?? animal.name,
+        radius: aquaticAnimal ? maxAttackDistance : 8,
+        manualAttackCount: attackResult.manualAttackCount ?? 0
+      });
+      return false;
     }
 
     this.markTaskPhase("collect_drops", "拾取掉落物", "active", { target: animal.name, strategy });
-    await this.collectNearbyItems();
+    await this.collectHuntDrops({
+      beforeFood,
+      targetName: animal.name,
+      allowWater: Boolean(aquaticAnimal),
+      maxDistance: aquaticAnimal ? 18 : 12,
+      timeoutMs: aquaticAnimal ? 7000 : 4500
+    });
     const afterFood = countItems(inventoryFromBot(this.bot), FOOD_ITEMS);
     const gainedFood = afterFood - beforeFood;
     this.markTaskPhase("verify", "验证食物增加", gainedFood > 0 ? "completed" : "failed", {
@@ -5123,6 +5483,194 @@ class SurvivalController {
     this.recordActionFailure("hunt_food", "no_food_gain", animal.position, { target: animal.name, radius: aquaticAnimal ? 5 : 8 });
     this.logger.info(`action=hunt_food; target=${animal.name}; result=no_food_gain; strategy=${strategy}; food=${beforeFood}->${afterFood}`);
     return false;
+  }
+
+  huntFoodSelectionOptions(decision = {}) {
+    const parameters = this.taskParametersFromDecision(decision);
+    const requestedRadius = Number(parameters.searchRadius ?? parameters.radius);
+    const defaultSearchRadius = this.config.survival.foodSearchRadius ?? 48;
+    const searchRadius = Number.isFinite(requestedRadius) && requestedRadius > 0
+      ? Math.max(8, Math.min(96, requestedRadius))
+      : defaultSearchRadius;
+    const lowFood = this.config.survival.lowFood ?? 14;
+    const criticalHealth = this.config.survival.criticalHealth ?? 8;
+    const waterContext = !this.isLowOxygen()
+      && !this.isBodyInWater(this.bot?.entity?.position)
+      && Boolean(this.findOpenWaterFoodSearchTarget(this.bot?.entity?.position, { radius: 10, quiet: true }));
+    const allowAquaticHunt = parameters.allowAquaticHunt === true
+      || /aquatic|fish|salmon|cod/i.test(parameters.mode ?? "")
+      || (this.bot.food ?? 20) <= lowFood
+      || (this.bot.health ?? 20) <= criticalHealth
+      || waterContext;
+    return {
+      parameters,
+      searchRadius,
+      allowAquaticHunt,
+      maxAquaticDistance: allowAquaticHunt ? Math.min(searchRadius, 48) : 4,
+      maxAquaticVerticalDelta: allowAquaticHunt ? 6 : 2,
+      maxLandDistance: searchRadius
+    };
+  }
+
+  findOpenWaterFoodSearchTarget(origin = this.bot?.entity?.position, options = {}) {
+    if (!this.hasValidPosition(origin) || typeof this.bot?.blockAt !== "function") return null;
+    const radius = Math.max(3, Math.min(Number(options.radius) || 24, 48));
+    const approachStandRadius = Math.max(3, Math.min(Number(options.approachStandRadius) || 6, 10));
+    const unreachableRadius = options.unreachableRadius ?? 5;
+    const base = origin.floored();
+    const candidates = [];
+
+    for (let distance = 1; distance <= radius; distance++) {
+      for (let x = -distance; x <= distance; x++) {
+        for (let z = -distance; z <= distance; z++) {
+          if (Math.max(Math.abs(x), Math.abs(z)) !== distance) continue;
+          for (const yOffset of [-2, -1, 0, 1, 2]) {
+            const waterPosition = base.offset(x, yOffset, z);
+            const water = this.bot.blockAt(waterPosition);
+            if (!this.isWaterBlock(water)) continue;
+            const above = this.bot.blockAt(waterPosition.offset(0, 1, 0));
+            if (!above || above.boundingBox === "block" || this.isWaterBlock(above) || this.isIceBlock(above)) continue;
+            if (this.isExplorationTargetUnreachable?.(waterPosition, unreachableRadius)) continue;
+
+            const standPosition = this.findNearbySafeStandPositions(waterPosition, approachStandRadius)
+              .filter((candidate) => candidate.distanceTo(waterPosition) <= approachStandRadius + 0.5)
+              .filter((candidate) => !this.isExplorationTargetUnreachable?.(candidate, unreachableRadius))
+              .sort((left, right) => {
+                const originDelta = this.distanceBetweenPositions(origin, left) - this.distanceBetweenPositions(origin, right);
+                if (Math.abs(originDelta) > 0.001) return originDelta;
+                return this.distanceBetweenPositions(waterPosition, left) - this.distanceBetweenPositions(waterPosition, right);
+              })[0] ?? null;
+            if (!standPosition) continue;
+
+            candidates.push({
+              waterPosition,
+              standPosition,
+              distance: this.distanceBetweenPositions(origin, standPosition),
+              waterDistance: this.distanceBetweenPositions(origin, waterPosition)
+            });
+          }
+        }
+      }
+      if (candidates.length > 0) break;
+    }
+
+    const best = candidates.sort((left, right) => {
+      if (Math.abs(left.distance - right.distance) > 0.001) return left.distance - right.distance;
+      return left.waterDistance - right.waterDistance;
+    })[0] ?? null;
+    if (!best && !options.quiet) {
+      this.recordBehaviorLog?.("strategy_switch", "no safe open water food search stand found", { radius }, "warn");
+    }
+    return best;
+  }
+
+  async pursueAndAttackFoodTarget(animal, options = {}) {
+    const targetId = animal?.id;
+    const latestTarget = () => (targetId !== undefined ? this.bot?.entities?.[targetId] : null) ?? animal;
+    let target = latestTarget();
+    if (!target || !this.hasValidPosition(target.position) || !this.hasValidPosition(this.bot.entity?.position)) {
+      return { ok: false, reason: "hunt_target_invalid", target };
+    }
+
+    const aquatic = Boolean(options.aquatic ?? AQUATIC_FOOD_MOBS.has(target.name));
+    const timeoutMs = Math.max(500, Number(options.timeoutMs) || this.config.survival.actionTimeoutMs || 9000);
+    const tickMs = Math.max(100, Math.min(Number(options.tickMs) || (aquatic ? 150 : 180), 300));
+    const maxTicks = Math.max(1, Math.ceil(timeoutMs / tickMs) + 2);
+    const attackRange = options.attackRange ?? (aquatic ? 4.2 : 3.2);
+    const followRange = options.followRange ?? (aquatic ? 2.2 : 1.8);
+    const manualSwimRange = options.manualSwimRange ?? 7.5;
+    const attackCooldownMs = Math.max(0, Number(options.attackCooldownMs ?? 350) || 0);
+    let lastPathRefreshAt = 0;
+    let lastManualAttackAt = 0;
+    let manualAttackCount = 0;
+    let lastTraceTouchAt = 0;
+    const traceHeartbeat = this.startTaskTraceHeartbeat?.({
+      action: "hunt_food",
+      phase: "attack_animal",
+      mode: aquatic ? "aquatic_pursuit" : "land_pursuit",
+      target: target.name
+    }, this.config.survival?.taskTraceHeartbeatMs ?? 2000);
+
+    this.bot.pvp?.attack?.(target);
+    try {
+      for (let tick = 0; tick < maxTicks; tick++) {
+        target = latestTarget();
+        if (!target || !this.bot?.entities?.[targetId]) return { ok: true, killed: true, manualAttackCount };
+        if (this.isLowOxygen()) return { ok: false, reason: "low_oxygen_escape", target, manualAttackCount };
+        const threat = this.nearestEntity((entity) => HOSTILE_MOBS.has(entity.name), this.config.survival.threatRadius);
+        if (threat) return { ok: false, reason: "interrupted_by_hostile", threat, target, manualAttackCount };
+
+        const distance = this.hasValidPosition(target.position) && this.hasValidPosition(this.bot.entity?.position)
+          ? target.position.distanceTo(this.bot.entity.position)
+          : Infinity;
+        if (!Number.isFinite(distance)) return { ok: false, reason: "hunt_target_invalid", target, manualAttackCount };
+
+        const now = Date.now();
+        if (now - lastTraceTouchAt >= 1000) {
+          this.touchTaskTrace?.({
+            action: "hunt_food",
+            phase: "attack_animal",
+            mode: aquatic ? "aquatic_pursuit" : "land_pursuit",
+            target: target.name,
+            distance: Number.isFinite(distance) ? Number(distance.toFixed(1)) : null,
+            manualAttackCount
+          });
+          lastTraceTouchAt = now;
+        }
+
+        if (this.hasValidPosition(target.position) && typeof this.bot.lookAt === "function") {
+          await this.runBoundedAction("hunt_food_target_look", () => this.bot.lookAt(target.position.offset(0, aquatic ? 0.25 : 0.8, 0), true), aquatic ? 100 : 250);
+        }
+
+        if (!aquatic && distance > followRange && this.bot.pathfinder?.setGoal && typeof GoalFollow === "function" && now - lastPathRefreshAt >= 350) {
+          try {
+            this.bot.pathfinder.setGoal(new GoalFollow(target, followRange), true);
+            lastPathRefreshAt = now;
+          } catch (error) {
+            this.logger.debug(`hunt follow goal failed: ${error.message}`);
+          }
+        }
+
+        if (aquatic && distance > attackRange * 0.35 && distance <= manualSwimRange && typeof this.bot.setControlState === "function") {
+          const verticalDelta = Number(target.position.y) - Number(this.bot.entity.position.y);
+          this.bot.setControlState("sprint", !this.isLowOxygen(12));
+          this.bot.setControlState("forward", true);
+          this.bot.setControlState("jump", verticalDelta > 0.6);
+          this.bot.setControlState("sneak", verticalDelta < -0.8);
+        } else if (aquatic && typeof this.bot.setControlState === "function") {
+          this.bot.setControlState("forward", false);
+          this.bot.setControlState("jump", false);
+          this.bot.setControlState("sneak", false);
+        }
+
+        if (distance <= attackRange && typeof this.bot.attack === "function" && now - lastManualAttackAt >= attackCooldownMs) {
+          try {
+            this.bot.attack(target);
+            manualAttackCount++;
+            lastManualAttackAt = now;
+          } catch (error) {
+            this.logger.debug("manual hunt attack failed", error.message);
+          }
+        }
+
+        await this.wait(tickMs);
+      }
+    } finally {
+      if (traceHeartbeat) clearInterval(traceHeartbeat);
+      if (aquatic) {
+        this.bot.setControlState?.("forward", false);
+        this.bot.setControlState?.("jump", false);
+        this.bot.setControlState?.("sneak", false);
+        this.bot.setControlState?.("sprint", false);
+      }
+      this.bot.pathfinder?.setGoal?.(null);
+      this.bot.pvp?.stop?.();
+    }
+
+    target = latestTarget();
+    return target && this.bot?.entities?.[targetId]
+      ? { ok: false, reason: "target_survived", target, manualAttackCount }
+      : { ok: true, killed: true, manualAttackCount };
   }
 
   isHuntFoodTarget(entity, options = {}) {
@@ -5633,6 +6181,11 @@ class SurvivalController {
 
         if (!this.hasSolidSupport(stair.support)) {
           this.logger.warn(`action=dig_mine_probe; direction=${this.formatPosition(direction)} unsupported at ${this.formatPosition(stair.feet)}`);
+          break;
+        }
+
+        if (this.isUnsafeMineProbeStep(stair)) {
+          this.logger.warn(`action=dig_mine_probe; direction=${this.formatPosition(direction)} unstable_falling_block at ${this.formatPosition(stair.feet)}`);
           break;
         }
 
@@ -6949,11 +7502,14 @@ class SurvivalController {
         allowAquaticHunt: true,
         maxAquaticDistance: Math.min(this.config.survival.foodSearchRadius ?? 48, 48),
         maxAquaticVerticalDelta: 6,
-        maxLandDistance: Math.min(this.config.survival.foodSearchRadius ?? 48, 32)
+        maxLandDistance: this.config.survival.foodSearchRadius ?? 48
       }).animal
       : null;
     const visibleFoodExploreTarget = foodRecovery
       ? this.resolveFoodRecoveryExploreTarget(origin, visibleFoodTarget, recoveryOptions)
+      : null;
+    const openWaterFoodExploreTarget = foodRecovery && !visibleFoodExploreTarget
+      ? this.findOpenWaterFoodSearchTarget(origin, { radius: Math.min(this.config.survival.foodSearchRadius ?? 48, 40), unreachableRadius: recoveryOptions.unreachableRadius ?? 5 })
       : null;
     const localRecoveryStand = foodRecovery && (exploreBlocked || !visibleFoodExploreTarget) && typeof this.bot?.blockAt === "function"
       ? this.findNearbySafeStandPositions(origin, 6).find(
@@ -6973,11 +7529,12 @@ class SurvivalController {
       : null;
     const safeTarget = usableExplicitTarget
       ?? visibleFoodExploreTarget
+      ?? openWaterFoodExploreTarget?.standPosition
       ?? broadRecoveryTarget
       ?? localRecoveryStand;
     const fallbackScale = recoveryExplore ? (exploreBlocked ? 0.35 : 0.7) : 1;
     const target = safeTarget ?? new Vec3(origin.x + this.randomOffset() * fallbackScale, origin.y, origin.z + this.randomOffset() * fallbackScale);
-    const label = explicitTarget ? "parameterized_explore" : (visibleFoodTarget && visibleFoodExploreTarget) ? "food_source_recovery_explore" : foodRecovery ? "food_recovery_explore" : woodRecovery ? "wood_recovery_explore" : "explore";
+    const label = explicitTarget ? "parameterized_explore" : (visibleFoodTarget && visibleFoodExploreTarget) ? "food_source_recovery_explore" : openWaterFoodExploreTarget ? "open_water_food_search" : foodRecovery ? "food_recovery_explore" : woodRecovery ? "wood_recovery_explore" : "explore";
     const range = Number.isFinite(requestedRange) && requestedRange > 0 ? requestedRange : (recoveryExplore || explicitTarget ? 3 : 4);
     const traceHeartbeat = this.startTaskTraceHeartbeat({ action: "explore", mode: parameters.mode ?? label }, this.config.survival?.taskTraceHeartbeatMs ?? 2000);
     try {
@@ -6990,7 +7547,7 @@ class SurvivalController {
       label,
       timeoutMs: recoveryExplore ? Math.min(Math.max(this.config.survival.actionTimeoutMs * 2, 12000), 20000) : Math.min(this.config.survival.actionTimeoutMs, 10000),
       learnPosition: new Vec3(target.x, target.y, target.z),
-      target: (visibleFoodTarget && visibleFoodExploreTarget) ? visibleFoodTarget.name : (explicitTarget ? (typeof parameters.target === "string" ? parameters.target : "parameterized_target") : foodRecovery ? "food_recovery" : woodRecovery ? "wood_recovery" : "random_walk"),
+      target: (visibleFoodTarget && visibleFoodExploreTarget) ? visibleFoodTarget.name : openWaterFoodExploreTarget ? "open_water_food_search" : (explicitTarget ? (typeof parameters.target === "string" ? parameters.target : "parameterized_target") : foodRecovery ? "food_recovery" : woodRecovery ? "wood_recovery" : "random_walk"),
       radius: Number.isFinite(requestedRadius) ? requestedRadius : (recoveryExplore ? 18 : 10)
     });
     this.rememberExplorationTarget(target, { reached, purpose: parameters.mode ?? label, area: parameters.area ?? null });
@@ -7281,6 +7838,7 @@ class SurvivalController {
         ...this.findSafeAdjacentStandPositions(block.position)
       ]
         .filter((position, index, all) => all.findIndex((candidate) => this.sameBlockPosition(candidate, position)) === index)
+        .filter((position) => this.isSafeMiningStandPosition(position))
         .filter((position) => options.maxStandAbove === undefined || position.y <= botFeet.y + options.maxStandAbove)
         .filter((position) => options.maxStandBelow === undefined || position.y >= botFeet.y - options.maxStandBelow)
         .slice(0, 4);
@@ -7447,7 +8005,9 @@ class SurvivalController {
 
   isSafeMiningTarget(block, options = {}) {
     if (!block || block.name === "air" || this.isDamagingBlock(block) || block.diggable === false) return false;
-    if (this.isWaterBlock(block) || this.isWaterBlock(this.bot.blockAt(block.position.offset(0, 1, 0)))) return false;
+    const above = this.bot.blockAt(block.position.offset(0, 1, 0));
+    if (this.isWaterBlock(block) || this.isWaterBlock(above) || this.isIceBlock(above)) return false;
+    if (this.isFallingBlock(block) || this.hasFallingBlockAbove(block.position, options.fallingBlockScanHeight ?? 8)) return false;
     if (!this.hasValidPosition(this.bot.entity?.position)) return false;
 
     const botFeet = this.bot.entity.position.floored();
@@ -7462,6 +8022,7 @@ class SurvivalController {
 
   isSurfaceMiningTarget(block) {
     if (!block || block.name === "air" || this.isDamagingBlock(block)) return false;
+    if (this.isFallingBlock(block) || this.hasFallingBlockAbove(block.position, 8)) return false;
     const aboveTarget = block.position.offset(0, 1, 0);
     if (this.isPassableBlockAt(aboveTarget)) return true;
 
@@ -7498,8 +8059,34 @@ class SurvivalController {
     return offsets
       .map((offset) => blockPosition.plus(offset))
       .filter((candidate) => this.isDigReachableFromStand(blockPosition, candidate))
-      .filter((candidate) => this.isSafeStandPosition(candidate) && !this.findNearbyDamagingBlock(candidate, 1.2))
+      .filter((candidate) => this.isSafeMiningStandPosition(candidate) && !this.findNearbyDamagingBlock(candidate, 1.2))
       .sort((left, right) => this.distanceBetweenPositions(this.bot.entity.position, left) - this.distanceBetweenPositions(this.bot.entity.position, right));
+  }
+
+  isSafeMiningStandPosition(position) {
+    if (!this.isSafeStandPosition(position)) return false;
+    const base = position.floored();
+    const ground = this.bot.blockAt(base.offset(0, -1, 0));
+    return !this.isIceBlock(ground)
+      && !this.isFallingBlock(ground)
+      && !this.hasFallingBlockAbove(base, 4)
+      && !this.hasFallingBlockCollapseRiskNearStand(base);
+  }
+
+  isUnsafeMineProbeStep(stair) {
+    if (!stair) return true;
+    const feet = this.bot.blockAt(stair.feet);
+    const head = this.bot.blockAt(stair.head);
+    const support = this.bot.blockAt(stair.support);
+    return this.isFallingBlock(feet)
+      || this.isFallingBlock(head)
+      || this.isFallingBlock(support)
+      || this.wouldRemoveFallingBlockSupport(stair.feet)
+      || this.wouldRemoveFallingBlockSupport(stair.head)
+      || this.wouldRemoveFallingBlockSupport(stair.support)
+      || this.hasFallingBlockAbove(stair.feet, 6)
+      || this.hasFallingBlockAbove(stair.head, 5)
+      || this.hasFallingBlockCollapseRiskNearStand(stair.feet);
   }
 
   isDigReachableFromStand(blockPosition, standPosition) {
@@ -7578,6 +8165,7 @@ class SurvivalController {
     const sameLevelExits = this.sameLevelExitCandidates(base);
     const rim = this.findPitRimCandidate(base);
     const rimRise = rim ? rim.y - base.y : null;
+    const subsurface = this.analyzeSubsurfaceSituation(base, sameLevelExits, rim);
     const supportBlock = this.blockSummary(this.bot.blockAt(base.offset(0, -1, 0)));
     const belowSupportBlock = this.blockSummary(this.bot.blockAt(base.offset(0, -2, 0)));
     const supportColumnDepth = this.countSupportColumnDepth(base, 16);
@@ -7600,19 +8188,21 @@ class SurvivalController {
     const shallowPitWithoutMining = Boolean(rim && rimRise < 3 && !recentMiningAction);
     const pitLike = Boolean(rim && blockingSides >= 2 && !shallowPitWithoutMining);
     const elevatedColumn = sameLevelExits.length === 0 && safeSupportDescent && supportColumnDepth >= 2 && (!rim || blockingSides < 2);
-    const trapped = sameLevelExits.length === 0 && (pitLike || elevatedColumn);
-    const kind = !trapped ? "open" : (elevatedColumn ? "elevated_support_column" : "pit_or_enclosed_trap");
+    const subsurfaceTrap = Boolean(subsurface.needsSurfaceRecovery);
+    const trapped = subsurfaceTrap || (sameLevelExits.length === 0 && (pitLike || elevatedColumn));
+    const kind = !trapped ? "open" : (subsurfaceTrap ? "subsurface_enclosure" : (elevatedColumn ? "elevated_support_column" : "pit_or_enclosed_trap"));
     const routeOptions = [];
     if (sameLevelExits.length > 0) routeOptions.push("same_level_exit");
     if (rim) routeOptions.push("rim_path");
+    if (subsurface.needsSurfaceRecovery) routeOptions.push("surface_escape");
     if (safeSupportDescent) routeOptions.push("controlled_descent");
     if (pitLike) routeOptions.push("ascending_stair");
     const recommendedAction = !trapped
       ? "none"
-      : (elevatedColumn ? "controlled_descent" : (rim ? "rim_or_stair" : "controlled_descent"));
+      : (subsurfaceTrap ? "surface_escape" : (elevatedColumn ? "controlled_descent" : (rim ? "rim_or_stair" : "controlled_descent")));
     const summary = trapped
-      ? `navigation trap: ${kind}; exits=${sameLevelExits.length}; blockingSides=${blockingSides}; support=${supportBlock?.name ?? "none"}; supportDepth=${supportColumnDepth}; recommended=${recommendedAction}`
-      : `navigation open: exits=${sameLevelExits.length}; support=${supportBlock?.name ?? "none"}`;
+      ? `navigation trap: ${kind}; exits=${sameLevelExits.length}; blockingSides=${blockingSides}; support=${supportBlock?.name ?? "none"}; supportDepth=${supportColumnDepth}; surfaceRise=${subsurface.surfaceExitRise ?? "none"}; recommended=${recommendedAction}`
+      : `navigation open: exits=${sameLevelExits.length}; support=${supportBlock?.name ?? "none"}; openSky=${subsurface.openSkyHere}`;
 
     return {
       trapped,
@@ -7629,7 +8219,33 @@ class SurvivalController {
       safeSupportDescent,
       rim,
       rimRise,
+      subsurface,
       routeOptions
+    };
+  }
+
+  analyzeSubsurfaceSituation(position, sameLevelExits = [], rim = null) {
+    if (!this.hasValidPosition(position)) {
+      return { openSkyHere: false, surfaceExit: null, surfaceExitRise: null, needsSurfaceRecovery: false };
+    }
+    const base = position.floored();
+    const openSkyHere = this.hasOpenSkyColumn(base.offset(0, 1, 0), 24);
+    const surfaceExit = openSkyHere ? null : this.findSurfaceEscapeCandidate(base, this.config.survival?.surfaceEscapeMaxRise ?? 24, this.config.survival?.surfaceEscapeSearchRadius ?? 10);
+    const surfaceExitRise = surfaceExit ? surfaceExit.y - base.y : null;
+    const sameLevelExitCount = Array.isArray(sameLevelExits) ? sameLevelExits.length : 0;
+    const belowLikelySurface = base.y <= (this.config.survival?.surfaceRecoveryY ?? 58);
+    const needsSurfaceRecovery = Boolean(
+      !openSkyHere
+      && surfaceExit
+      && surfaceExitRise >= 3
+      && (belowLikelySurface || surfaceExitRise >= 6 || sameLevelExitCount <= 2 || rim)
+    );
+    return {
+      openSkyHere,
+      surfaceExit: surfaceExit ? this.feedbackPosition(surfaceExit) : null,
+      surfaceExitRise,
+      sameLevelExitCount,
+      needsSurfaceRecovery
     };
   }
 
@@ -7645,6 +8261,7 @@ class SurvivalController {
       safeSupportDescent: Boolean(analysis.safeSupportDescent),
       rim: analysis.rim ?? null,
       rimRise: analysis.rimRise,
+      subsurface: analysis.subsurface ?? null,
       routeOptions: analysis.routeOptions ?? []
     };
   }
@@ -7671,6 +8288,33 @@ class SurvivalController {
         .filter((candidate) => this.isSafeStandPosition(candidate) && !this.findNearbyDamagingBlock(candidate, 1.2))
         .sort((left, right) => this.distanceBetweenPositions(base, left) - this.distanceBetweenPositions(base, right))[0];
       if (safe) return safe;
+    }
+
+    return null;
+  }
+
+  findSurfaceEscapeCandidate(position = this.bot.entity?.position, maxRise = 24, radius = 10) {
+    if (!this.hasValidPosition(position)) return null;
+    const base = position.floored();
+    const riseLimit = Math.max(3, Math.min(40, Number(maxRise) || 24));
+    const horizontalLimit = Math.max(3, Math.min(16, Number(radius) || 10));
+
+    for (let yOffset = 1; yOffset <= riseLimit; yOffset++) {
+      const ringLimit = Math.min(horizontalLimit, Math.max(2, Math.ceil(yOffset / 2) + 2));
+      for (let distance = 0; distance <= ringLimit; distance++) {
+        const candidates = [];
+        for (let x = -distance; x <= distance; x++) {
+          for (let z = -distance; z <= distance; z++) {
+            if (Math.max(Math.abs(x), Math.abs(z)) !== distance) continue;
+            candidates.push(base.offset(x, yOffset, z));
+          }
+        }
+        const safe = candidates
+          .filter((candidate) => this.isSafeStandPosition(candidate) && !this.findNearbyDamagingBlock(candidate, 1.2))
+          .filter((candidate) => this.hasOpenSkyColumn(candidate.offset(0, 1, 0), 24))
+          .sort((left, right) => this.distanceBetweenPositions(base, left) - this.distanceBetweenPositions(base, right))[0];
+        if (safe) return safe;
+      }
     }
 
     return null;
@@ -8106,9 +8750,18 @@ class SurvivalController {
     return firstInventoryItem(this.bot, baitByAnimal[animalName] || []);
   }
 
-  async digBlockAt(position) {
+  async digBlockAt(position, options = {}) {
     const block = this.bot.blockAt(position);
     if (!block || block.name === "air" || block.name.includes("water") || this.isDamagingBlock(block) || this.isDoorBlock(block) || block.diggable === false) {
+      return false;
+    }
+    if (!options.allowFallingBlockDig && this.isFallingBlock(block)) {
+      this.logger.warn?.(`dig_block_guard=falling_block; block=${block.name}; pos=${this.formatPosition(position)}`);
+      return false;
+    }
+    if (!options.allowFallingBlockSupport && this.wouldRemoveFallingBlockSupport(position)) {
+      const above = this.bot.blockAt(position.floored().offset(0, 1, 0));
+      this.logger.warn?.(`dig_block_guard=falling_block_support; block=${block.name}; above=${above?.name ?? "unknown"}; pos=${this.formatPosition(position)}`);
       return false;
     }
 
@@ -8135,6 +8788,86 @@ class SurvivalController {
 
   isWaterBlock(block) {
     return Boolean(block && WATER_BLOCK_NAMES.has(block.name));
+  }
+
+  isIceBlock(block) {
+    return Boolean(block && ICE_BLOCK_NAMES.has(block.name));
+  }
+
+  isFallingBlock(block) {
+    return Boolean(block && isFallingBlockName(block.name));
+  }
+
+  hasFallingBlockAbove(position, maxHeight = 8) {
+    return Boolean(this.findFallingBlockAbove(position, maxHeight));
+  }
+
+  findFallingBlockAbove(position, maxHeight = 8) {
+    if (!this.hasValidPosition(position) || typeof this.bot?.blockAt !== "function") return false;
+    const base = position.floored();
+    for (let offset = 1; offset <= maxHeight; offset++) {
+      const block = this.bot.blockAt(base.offset(0, offset, 0));
+      if (!block) return false;
+      if (this.isFallingBlock(block)) return block;
+      if (block.boundingBox === "block" && !this.isWaterBlock(block)) return false;
+    }
+    return null;
+  }
+
+  wouldRemoveFallingBlockSupport(position) {
+    if (!this.hasValidPosition(position) || typeof this.bot?.blockAt !== "function") return false;
+    const above = this.bot.blockAt(position.floored().offset(0, 1, 0));
+    return this.isFallingBlock(above);
+  }
+
+  findFallingBlockEntrapment(position) {
+    if (!this.hasValidPosition(position) || typeof this.bot?.blockAt !== "function") return null;
+    const base = position.floored();
+    const bodyBlocks = [
+      { role: "feet", block: this.bot.blockAt(base) },
+      { role: "head", block: this.bot.blockAt(base.offset(0, 1, 0)) }
+    ];
+    for (const entry of bodyBlocks) {
+      if (this.isFallingBlock(entry.block)) {
+        return {
+          name: entry.block.name,
+          position: entry.block.position,
+          distance: 0,
+          role: entry.role,
+          reason: "body_space_occupied_by_falling_block"
+        };
+      }
+    }
+
+    const overhead = this.findFallingBlockAbove(base, 6);
+    if (overhead && this.isPassableBlockAt(base) && this.isPassableBlockAt(base.offset(0, 1, 0))) {
+      return {
+        name: overhead.name,
+        position: overhead.position,
+        distance: overhead.position.offset(0.5, 0.5, 0.5).distanceTo(position),
+        role: "overhead",
+        reason: "falling_block_above_body_column"
+      };
+    }
+
+    return null;
+  }
+
+  hasFallingBlockCollapseRiskNearStand(position) {
+    if (!this.hasValidPosition(position)) return true;
+    if (typeof this.bot?.blockAt !== "function") return false;
+    const base = position.floored();
+    if (this.findFallingBlockEntrapment(base)) return true;
+    for (const direction of CARDINAL_DIRECTIONS) {
+      for (const yOffset of [0, 1, 2]) {
+        const adjacent = base.plus(direction).offset(0, yOffset, 0);
+        const block = this.bot.blockAt(adjacent);
+        if (!this.isFallingBlock(block)) continue;
+        const below = this.bot.blockAt(adjacent.offset(0, -1, 0));
+        if (!below || below.boundingBox !== "block" || this.isWaterBlock(below)) return true;
+      }
+    }
+    return false;
   }
 
   findNearbyDamagingBlock(position, radius = 1.5) {
@@ -8453,14 +9186,166 @@ class SurvivalController {
     return null;
   }
 
+  findNearestItemDrop(maxDistance = 12, predicate = () => true) {
+    return this.nearestEntity((entity) => {
+      if (entity.name !== "item") return false;
+      return predicate(entity);
+    }, maxDistance);
+  }
+
+  itemDropName(entity) {
+    if (!entity) return null;
+    if (typeof entity.itemName === "string") return entity.itemName;
+    if (typeof entity.item?.name === "string") return entity.item.name;
+
+    const metadataValues = Array.isArray(entity.metadata) ? entity.metadata : Object.values(entity.metadata ?? {});
+    const candidates = [
+      entity.metadataItem,
+      entity.item,
+      ...metadataValues,
+      ...metadataValues.map((value) => value?.item),
+      ...metadataValues.map((value) => value?.value),
+      ...metadataValues.map((value) => value?.present)
+    ].filter(Boolean);
+
+    for (const value of candidates) {
+      if (!value || typeof value !== "object") continue;
+      if (typeof value.name === "string" && Number.isFinite(Number(value.count ?? value.itemCount ?? 1))) return value.name;
+      const itemId = Number(value.itemId ?? value.id);
+      const itemCount = Number(value.itemCount ?? value.count ?? 1);
+      if (Number.isFinite(itemId) && Number.isFinite(itemCount) && itemCount > 0) {
+        const itemName = this.mcData?.items?.[itemId]?.name ?? this.mcData?.itemsById?.[itemId]?.name;
+        if (itemName) return itemName;
+      }
+    }
+
+    return null;
+  }
+
+  isFoodItemDrop(entity) {
+    const itemName = this.itemDropName(entity);
+    return Boolean(itemName && FOOD_ITEMS.includes(itemName));
+  }
+
+  isPossibleHuntFoodDrop(entity) {
+    const itemName = this.itemDropName(entity);
+    return itemName === null || FOOD_ITEMS.includes(itemName);
+  }
+
+  isWaterItemDrop(item) {
+    if (!this.hasValidPosition(item?.position) || typeof this.bot?.blockAt !== "function") return false;
+    const base = item.position.floored();
+    return [base, base.offset(0, -1, 0), base.offset(0, 1, 0)]
+      .some((position) => this.isWaterBlock(this.bot.blockAt(position)));
+  }
+
+  async collectFloatingWaterItem(item, options = {}) {
+    const targetId = item?.id;
+    const latestItem = () => (targetId !== undefined ? this.bot?.entities?.[targetId] : null) ?? (targetId === undefined ? item : null);
+    const timeoutMs = Math.max(500, Number(options.timeoutMs) || 4500);
+    const tickMs = Math.max(120, Math.min(Number(options.tickMs) || 220, 400));
+    const pickupRange = Math.max(0.8, Number(options.range) || 1.25);
+    const maxAttempts = Math.max(1, Math.ceil(timeoutMs / tickMs));
+
+    try {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        const currentItem = latestItem();
+        if (!currentItem || !this.hasValidPosition(currentItem.position)) return true;
+        if (!this.hasValidPosition(this.bot?.entity?.position)) return false;
+        if (this.shouldEscapeForLowOxygen?.(this.bot.entity.position)) {
+          await this.escapeLowOxygen({ reason: "collect_floating_food_drop", target: options.targetName ?? "item" });
+          return false;
+        }
+
+        const distance = this.distanceBetweenPositions(this.bot.entity.position, currentItem.position);
+        if (distance <= pickupRange) {
+          await this.wait(Math.min(tickMs, 180));
+          if (!latestItem()) return true;
+        }
+
+        const verticalDelta = Number(currentItem.position.y) - Number(this.bot.entity.position.y);
+        const shouldDescend = verticalDelta < -0.8 && this.isBodyInWater(this.bot.entity.position);
+        const shouldAscend = verticalDelta > -0.3 || !this.isBodyInWater(this.bot.entity.position);
+        if (typeof this.bot.lookAt === "function") {
+          await this.runBoundedAction("collect_floating_drop_look", () => this.bot.lookAt(currentItem.position.offset(0, 0.25, 0), true), 250);
+        }
+        this.bot.setControlState?.("sprint", false);
+        this.bot.setControlState?.("forward", true);
+        this.bot.setControlState?.("jump", shouldAscend);
+        this.bot.setControlState?.("sneak", shouldDescend);
+        await this.wait(tickMs);
+      }
+    } finally {
+      this.bot.setControlState?.("forward", false);
+      this.bot.setControlState?.("jump", false);
+      this.bot.setControlState?.("sneak", false);
+      this.bot.setControlState?.("sprint", false);
+    }
+
+    const finalItem = latestItem();
+    return !finalItem || (this.hasValidPosition(this.bot?.entity?.position) && this.distanceBetweenPositions(this.bot.entity.position, finalItem.position) <= pickupRange + 0.5);
+  }
+
+  async collectHuntDrops(options = {}) {
+    const maxDistance = options.maxDistance ?? 14;
+    const timeoutMs = Math.max(500, Number(options.timeoutMs) || 4500);
+    const tickMs = Math.max(150, Math.min(Number(options.tickMs) || 250, 500));
+    const maxAttempts = Math.max(1, Math.ceil(timeoutMs / tickMs));
+    const beforeFood = Number.isFinite(Number(options.beforeFood))
+      ? Number(options.beforeFood)
+      : countItems(inventoryFromBot(this.bot), FOOD_ITEMS);
+    const heartbeat = this.startTaskTraceHeartbeat?.({ phase: "collect_drops", target: options.targetName ?? "food_drop" }, 1500);
+
+    try {
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (countItems(inventoryFromBot(this.bot), FOOD_ITEMS) > beforeFood) return true;
+        const drop = this.findNearestItemDrop(maxDistance, (entity) => this.isPossibleHuntFoodDrop(entity));
+        if (drop) {
+          const waterDrop = this.isWaterItemDrop(drop);
+          if (waterDrop && options.allowWater !== false) {
+            await this.collectFloatingWaterItem(drop, {
+              targetName: options.targetName,
+              timeoutMs: Math.min(timeoutMs, Math.max(1200, maxAttempts * tickMs - attempt * tickMs)),
+              tickMs,
+              range: options.range ?? 1.25
+            });
+          } else {
+            await this.runBoundedAction(options.label ?? "collect_hunt_drop", () => this.collectNearbyItems({
+              maxDistance,
+              range: options.range ?? 1,
+              timeoutMs: Math.min(1800, timeoutMs),
+              label: options.label ?? "collect_hunt_drop",
+              itemPredicate: (entity) => entity?.id === drop.id
+            }), Math.min(2200, timeoutMs));
+          }
+        } else {
+          await this.runBoundedAction(options.label ?? "collect_hunt_drop", () => this.collectNearbyItems({
+            maxDistance,
+            range: options.range ?? 1,
+            timeoutMs: Math.min(1600, timeoutMs),
+            label: options.label ?? "collect_hunt_drop",
+            itemPredicate: (entity) => this.isPossibleHuntFoodDrop(entity)
+          }), Math.min(2000, timeoutMs));
+        }
+
+        if (countItems(inventoryFromBot(this.bot), FOOD_ITEMS) > beforeFood) return true;
+        await this.wait(tickMs);
+      }
+    } finally {
+      if (heartbeat) clearInterval(heartbeat);
+    }
+
+    return countItems(inventoryFromBot(this.bot), FOOD_ITEMS) > beforeFood;
+  }
+
   async collectNearbyItems(options = {}) {
     const maxDistance = options.maxDistance ?? 12;
     const range = options.range ?? 1;
     const pickupRange = options.avoidDamagingBlocks ? Math.max(range, options.pickupRange ?? 1.8) : range;
-    const item = this.nearestEntity((entity) => {
-      if (entity.name !== "item") return false;
+    const item = this.findNearestItemDrop(maxDistance, (entity) => {
+      if (typeof options.itemPredicate === "function" && !options.itemPredicate(entity)) return false;
       return !options.avoidDamagingBlocks || Boolean(this.findSafeItemPickupPosition(entity.position, pickupRange));
-    }, maxDistance);
+    });
     if (!item) return false;
 
     if (options.avoidDamagingBlocks) {

@@ -1,5 +1,11 @@
 const MINECRAFT_SURVIVAL_GUIDE = Object.freeze({
   source: "project_mc_wiki_summary",
+  sourceUrls: [
+    "https://minecraft.wiki/w/Sand",
+    "https://minecraft.wiki/w/Gravel",
+    "https://minecraft.wiki/w/Tutorial:Beginner%27s_guide",
+    "https://minecraft.wiki/w/Tutorial:Mining"
+  ],
   gameVersion: "Minecraft Java survival 1.21.x",
   purpose: "Compact wiki-style facts for Smart Brain task selection. The controller still owns execution and safety priority.",
   environmentRules: [
@@ -8,6 +14,9 @@ const MINECRAFT_SURVIVAL_GUIDE = Object.freeze({
     "If low oxygen happens under an ice ceiling, break the overhead ice to open a breathing hole before treating the ice ceiling as a normal surface.",
     "Only request escape_hazard for water when the bot is in water and oxygen is at or below the configured low oxygen threshold.",
     "Do not request escape_pit just because the bot is underwater; water columns are swimmable unless blocked by solid terrain and low oxygen is active.",
+    "Sand, red_sand, gravel, suspicious_sand, suspicious_gravel, and concrete_powder are gravity-affected falling blocks.",
+    "Mining below or beside falling blocks can make them drop into the opened space and bury the bot.",
+    "Beach, desert, riverbed, and gravel shore terrain are poor places to start early collect_stone downward probes; search for exposed stone or relocate first.",
     "Lava, damaging plants, cactus, fire, and magma-like damage sources are true hazards and should interrupt ordinary tasks."
   ],
   vitals: {
@@ -34,7 +43,9 @@ const MINECRAFT_SURVIVAL_GUIDE = Object.freeze({
     ],
     collect_stone: [
       "Prefer exposed stone with safe side stands.",
-      "Only dig stair probes after repeated surface search failures; never dig straight down as a generic escape."
+      "Reject stone targets covered by sand, red_sand, gravel, suspicious_sand, suspicious_gravel, or concrete_powder.",
+      "Do not stand on sand or gravel while mining stone from the side.",
+      "Only dig stair probes after repeated surface search failures and only through stable non-falling terrain; never dig straight down as a generic escape."
     ],
     wait_out_night: [
       "Use nearby shelter or a simple emergency shelter.",

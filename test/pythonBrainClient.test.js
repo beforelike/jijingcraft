@@ -12,6 +12,12 @@ test("Python Brain request carries compact planner context and hostile flags", (
       isBodyInWater: false,
       position: new Vec3(1, 64, -2),
       isNight: false,
+      navigationAnalysis: {
+        trapped: true,
+        kind: "subsurface_enclosure",
+        recommendedAction: "surface_escape",
+        subsurface: { needsSurfaceRecovery: true, surfaceExit: { x: 4, y: 64, z: 0 }, surfaceExitRise: 14 }
+      },
       inventory: { oak_log: 2 },
       entities: [{ name: "zombie", distance: 5, position: new Vec3(3, 64, -2) }]
     },
@@ -26,6 +32,8 @@ test("Python Brain request carries compact planner context and hostile flags", (
   assert.equal(request.ruleDecision.type, "collect_wood");
   assert.equal(request.plannerContext.purpose, "smart_brain_task_directive_planning");
   assert.equal(request.snapshot.isBodyInWater, false);
+  assert.equal(request.snapshot.navigationAnalysis.kind, "subsurface_enclosure");
+  assert.equal(request.plannerContext.world.navigationAnalysis.subsurface.needsSurfaceRecovery, true);
   assert.equal(Object.hasOwn(request.snapshot, "oxygen"), false);
   assert.equal(Object.hasOwn(request.plannerContext.bot, "oxygen"), false);
   assert.ok(request.plannerContext.minecraftWiki.environmentRules.some((rule) => /Water is traversable/.test(rule)));

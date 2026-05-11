@@ -30,6 +30,13 @@ function readInteger(name, fallback) {
   return value;
 }
 
+function readNumber(name, fallback) {
+  const raw = readString(name, String(fallback));
+  const value = Number.parseFloat(raw);
+  if (Number.isNaN(value)) return fallback;
+  return value;
+}
+
 function readBoolean(name, fallback) {
   const raw = readString(name, String(fallback)).toLowerCase();
   if (["1", "true", "yes", "on"].includes(raw)) return true;
@@ -88,7 +95,7 @@ function loadPythonBrainConfig() {
   const host = readString("BRAIN_HOST", "127.0.0.1");
   const port = readInteger("BRAIN_PORT", 3001);
   const url = readString("PYTHON_BRAIN_URL", `http://${host}:${port}`);
-  const command = readString("PYTHON_BRAIN_COMMAND", "python");
+  const command = readString("PYTHON_BRAIN_COMMAND", "");
   const args = readString("PYTHON_BRAIN_ARGS", "-m python_brain.main");
   const enabled = readBoolean("PYTHON_BRAIN_ENABLED", false);
   return {
@@ -193,6 +200,8 @@ function loadConfig() {
       panicRetreatMs: readInteger("PANIC_RETREAT_MS", 3500),
       avoidNightExploration: readBoolean("AVOID_NIGHT_EXPLORATION", true),
       actionTimeoutMs: readInteger("ACTION_TIMEOUT_MS", 25000),
+      taskNoProgressMs: readInteger("TASK_NO_PROGRESS_MS", 0),
+      taskProgressMinDistance: readNumber("TASK_PROGRESS_MIN_DISTANCE", 0),
       placeBlockTimeoutMs: readInteger("PLACE_BLOCK_TIMEOUT_MS", 3000),
       exactScanRadius: readInteger("EXACT_SCAN_RADIUS", 5),
       regionalScanRadius: readInteger("REGIONAL_SCAN_RADIUS", 100),

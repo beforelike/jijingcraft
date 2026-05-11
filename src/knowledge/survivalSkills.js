@@ -63,7 +63,7 @@ const SURVIVAL_SKILLS = [
     tasks: ["collect_wood", "craft_basic_supplies", "craft_basic_tools", "collect_stone", "craft_stone_tools"],
     preconditions: ["daytime_or_safe_shelter", "not_in_hazard", "not_critically_hungry"],
     success: ["has_stone_pickaxe", "has_stone_sword"],
-    safety: ["avoid_water", "mine_from_safe_side", "do_not_dig_vertical_shafts"],
+    safety: ["avoid_water", "mine_from_safe_side", "do_not_dig_vertical_shafts", "avoid_falling_blocks"],
     sourcePatterns: ["voyager_skill_sequence", "touhou_tool_whitelist", "patchouli_entry"]
   },
   {
@@ -135,7 +135,7 @@ const SURVIVAL_SKILLS = [
     tasks: ["collect_stone", "mine_advanced_materials"],
     preconditions: ["has_pickaxe", "not_in_water", "safe_stand_available"],
     success: ["cobblestone_reserve_ready", "no_pit_trap"],
-    safety: ["prefer_surface", "safe_side_dig", "escape_pit_if_trapped"],
+    safety: ["prefer_surface", "safe_side_dig", "avoid_falling_blocks", "avoid_beach_down_dig", "escape_pit_if_trapped"],
     sourcePatterns: ["voyager_mine_block_primitive", "ponderer_path_replay"]
   }
 ];

@@ -192,6 +192,12 @@ test("dashboard state publishes sanitized bot status", () => {
         blockedTasks: [{ taskType: "hunt_food", reason: "safe_position_unreachable", failureCount: 2, recoveryTasks: ["explore"] }],
         recentFailures: [{ taskType: "hunt_food", action: "forage_food", reason: "safe_position_unreachable", position: new Vec3(4, 80, 4) }]
       },
+      taskProgress: {
+        taskType: "collect_stone",
+        status: "stuck",
+        reason: "no_movement_or_inventory_progress",
+        noProgressMs: 21000
+      },
       testTasks: { pendingTasks: [{ type: "escape_hazard", status: "pending", priority: 100 }] },
       behaviorQueue: {
         active: true,
@@ -252,7 +258,9 @@ test("dashboard state publishes sanitized bot status", () => {
   assert.equal(status.diagnostics.overall, "warning");
   assert.equal(status.diagnostics.signalCounts.warning > 0, true);
   assert.equal(status.diagnostics.signals.some((signal) => signal.code === "blocked_tasks_present"), true);
+  assert.equal(status.diagnostics.signals.some((signal) => signal.code === "task_no_progress"), true);
   assert.equal(status.diagnostics.recommendations.some((item) => item.code === "blocked_tasks_present"), true);
+  assert.equal(status.diagnostics.recommendations.some((item) => item.code === "task_no_progress"), true);
   assert.equal(status.diagnosticsHistory.length > 0, true);
   assert.equal(flattenBehaviorTree(status.behaviorTree).find((node) => node.active).id, "wait_out_night");
 });
@@ -328,6 +336,50 @@ test("dashboard state publishes detailed task traces", () => {
   assert.equal(status.taskTraceHistory[0].phaseEvents.length, 30);
   assert.equal(status.taskTraceHistory[0].observations.length, 30);
   assert.equal(status.taskTraceHistory[0].phaseEvents[29].details.position.text, "29, 64, 0");
+});
+
+test("dashboard diagnostics reports falling-block hazard and player-state parity warnings", () => {
+  const dashboard = createDashboardState();
+  dashboard.setConnection({ state: "connected" });
+  dashboard.publishTick({
+    snapshot: {
+      health: 16,
+      food: 18,
+      oxygen: 20,
+      position: new Vec3(0, 64, 0),
+      timeOfDay: 6000,
+      isNight: false,
+      environmentHazard: null,
+      fallingBlockHazard: {
+        name: "sand",
+        position: new Vec3(0, 65, 0),
+        distance: 0,
+        role: "head",
+        reason: "body_space_occupied_by_falling_block"
+      },
+      navigationTrap: false,
+      navigationAnalysis: null,
+      isInLava: false,
+      timeSinceOnGround: 0,
+      inventory: {},
+      entities: [],
+      playerState: {
+        gameMode: "survival",
+        difficulty: "normal",
+        activeEffects: [{ id: "10", name: "regeneration", amplifier: 0, duration: 120 }],
+        abilities: { flying: false, mayfly: false, invulnerable: false, instabuild: false },
+        warnings: [{ code: "active_effects_present", effects: ["regeneration"] }]
+      }
+    },
+    decision: { type: "collect_stone", reason: "need cobblestone" },
+    controller: { busy: false, emergencyBusy: false }
+  });
+
+  const status = dashboard.getSnapshot();
+  assert.equal(status.world.fallingBlockHazard.name, "sand");
+  assert.equal(status.bot.playerState.activeEffects[0].name, "regeneration");
+  assert.equal(status.diagnostics.signals.some((signal) => signal.code === "falling_block_hazard" && signal.level === "critical"), true);
+  assert.equal(status.diagnostics.signals.some((signal) => signal.code === "player_state_parity_warning"), true);
 });
 
 test("dashboard diagnostics reports low health starvation and night hostile pressure", () => {

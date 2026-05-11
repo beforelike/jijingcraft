@@ -10,6 +10,9 @@
   "scripts": {
     "start": "node src/index.js",
     "brain:start": "python -m python_brain.main",
+    "ingest:minecraft-wiki": "node scripts/ingestMinecraftWiki.js",
+    "build:minecraft-wiki-rag": "node scripts/buildMinecraftWikiRag.js",
+    "evaluate:minecraft-rag": "node scripts/evaluateMinecraftRag.js",
     "export:knowledge": "node src/knowledge/exportKnowledge.js",
     "scenario:berries": "node scripts/berryEscapeScenario.js",
     "scenario:berry-escape": "node scripts/berryEscapeScenario.js",

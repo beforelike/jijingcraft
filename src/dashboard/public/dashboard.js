@@ -472,6 +472,9 @@ function renderAgentMindMap(status) {
           payloadLine("memory.knownBlocks", status.memory?.knownBlocks ?? {}),
           payloadLine("memory.avoidedPositions", status.memory?.avoidedPositions?.length ?? 0),
           payloadLine("taskFeedback.lastEvent", controller.taskFeedback?.lastEvent),
+          payloadLine("taskProgress.status", controller.taskProgress?.status),
+          payloadLine("taskProgress.task", controller.taskProgress?.taskType),
+          payloadLine("taskProgress.noProgressMs", controller.taskProgress?.noProgressMs),
           ...blockedTaskLines(blockedTasks),
           ...recentFailureLines(recentFailures)
         ],

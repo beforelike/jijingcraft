@@ -323,6 +323,7 @@ function normalizeController(controller = {}) {
       remainingMs: Number(controller.forcedTask.remainingMs) || 0
     } : null,
     taskFeedback: normalizeTaskFeedback(controller.taskFeedback),
+    taskProgress: normalizeTaskProgress(controller.taskProgress),
     testTasks: normalizePriorityTasks(controller.testTasks),
     priorityTasks: normalizePriorityTasks(controller.priorityTasks),
     behaviorQueue: normalizeBehaviorQueue(controller.behaviorQueue),
@@ -469,6 +470,23 @@ function normalizeAgents(agents = {}) {
     lastProposals: Array.isArray(agents?.lastProposals) ? agents.lastProposals.slice(0, 8) : [],
     feedback: Array.isArray(agents?.feedback) ? agents.feedback.slice(0, 12) : [],
     updatedAt: agents?.updatedAt ?? null
+  };
+}
+
+function normalizeTaskProgress(taskProgress = null) {
+  if (!taskProgress || typeof taskProgress !== "object") return null;
+  return {
+    taskType: taskProgress.taskType ?? null,
+    status: taskProgress.status ?? "unknown",
+    reason: taskProgress.reason ?? null,
+    startedAt: taskProgress.startedAt ?? null,
+    lastProgressAt: taskProgress.lastProgressAt ?? null,
+    updatedAt: taskProgress.updatedAt ?? null,
+    noProgressMs: Number(taskProgress.noProgressMs) || 0,
+    interrupted: Boolean(taskProgress.interrupted),
+    position: serializePosition(taskProgress.position),
+    inventorySignature: taskProgress.inventorySignature ?? null,
+    phaseKey: taskProgress.phaseKey ?? null
   };
 }
 
@@ -789,10 +807,16 @@ function recommendationForSignal(signal = {}) {
       return "立即提升逃生任务优先级（escape_hazard/evade_hostiles），禁止进入普通采集流程。";
     case "hazard_handling":
       return "继续观察危险解除信号；若连续多个 tick 未解除，触发重规划并切换脱困策略。";
+    case "falling_block_hazard":
+      return "立即中断普通采集，清理 BOT 头/脚空间或移动到无沙砾坠落风险的安全站位。";
+    case "player_state_parity_warning":
+      return "检查 gamemode、activeEffects、abilities、attributes 与服务器 difficulty；只做诊断，不给 BOT 添加特权修正。";
     case "controller_emergency_busy":
       return "保持紧急流程独占，暂缓普通任务，确认 emergencyBusy 能在危险解除后回落。";
     case "blocked_tasks_present":
       return "查看 blockedTasks 的 recoveryTasks，优先执行探索/换位等恢复动作，避免原地重试。";
+    case "task_no_progress":
+      return "当前任务已被执行监督判定为无进展，应中断原动作、记录 taskFeedback，并切换到 blockedTasks 指定的恢复任务。";
     case "critical_health":
       return "暂停普通任务，优先吃食物、撤离威胁或进入饥饿恢复。";
     case "starvation_empty_food":
@@ -879,6 +903,26 @@ function buildDiagnostics(state, servedAtMs) {
     });
   }
 
+  if (world.fallingBlockHazard) {
+    const expected = decisionType === "escape_hazard" || controller.emergencyBusy;
+    signals.push({
+      level: expected ? "warning" : "critical",
+      code: "falling_block_hazard",
+      label: expected ? "落沙脱困中" : "落沙风险未处理",
+      detail: `${world.fallingBlockHazard.name}; reason=${world.fallingBlockHazard.reason ?? "unknown"}; decision=${decisionType ?? "none"}`
+    });
+  }
+
+  const playerWarnings = Array.isArray(state.bot?.playerState?.warnings) ? state.bot.playerState.warnings : [];
+  if (playerWarnings.length > 0) {
+    signals.push({
+      level: "warning",
+      code: "player_state_parity_warning",
+      label: "玩家状态需核查",
+      detail: playerWarnings.map((warning) => warning.code).join(",")
+    });
+  }
+
   if (controller.emergencyBusy) {
     signals.push({
       level: "warning",
@@ -895,6 +939,16 @@ function buildDiagnostics(state, servedAtMs) {
       code: "blocked_tasks_present",
       label: "任务阻塞",
       detail: `${blockedCount} 个任务被阻塞`
+    });
+  }
+
+  const taskProgress = controller.taskProgress ?? null;
+  if (taskProgress?.status === "stuck") {
+    signals.push({
+      level: "warning",
+      code: "task_no_progress",
+      label: "任务无进展",
+      detail: `${taskProgress.taskType ?? "unknown"}; stalled=${Math.round((Number(taskProgress.noProgressMs) || 0) / 1000)}s; reason=${taskProgress.reason ?? "unknown"}`
     });
   }
 
@@ -1124,7 +1178,8 @@ function createDashboardState(config = {}) {
         oxygen: Number(snapshot.oxygen) || 0,
         position: serializePosition(snapshot.position),
         dimension: dimension ?? "unknown",
-        experience: snapshot.experience ?? null
+        experience: snapshot.experience ?? null,
+        playerState: snapshot.playerState ?? null
       };
       state.world = {
         timeOfDay: Number(snapshot.timeOfDay) || 0,
@@ -1132,6 +1187,13 @@ function createDashboardState(config = {}) {
         environmentHazard: snapshot.environmentHazard ? {
           name: snapshot.environmentHazard.name,
           distance: round(snapshot.environmentHazard.distance)
+        } : null,
+        fallingBlockHazard: snapshot.fallingBlockHazard ? {
+          name: snapshot.fallingBlockHazard.name,
+          position: serializePosition(snapshot.fallingBlockHazard.position),
+          distance: round(snapshot.fallingBlockHazard.distance ?? 0),
+          role: snapshot.fallingBlockHazard.role ?? null,
+          reason: snapshot.fallingBlockHazard.reason ?? null
         } : null,
         navigationTrap: Boolean(snapshot.navigationTrap),
         navigationAnalysis: normalizeNavigationAnalysis(snapshot.navigationAnalysis),

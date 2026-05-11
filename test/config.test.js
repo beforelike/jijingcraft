@@ -38,7 +38,9 @@ const CONFIG_ENV_KEYS = [
   "DAY1_LOG_TARGET",
   "DAY1_COBBLESTONE_TARGET",
   "STOCKPILE_LOG_TARGET",
-  "STOCKPILE_COBBLESTONE_TARGET"
+  "STOCKPILE_COBBLESTONE_TARGET",
+  "TASK_NO_PROGRESS_MS",
+  "TASK_PROGRESS_MIN_DISTANCE"
 ];
 
 function withEnv(update, callback) {
@@ -202,10 +204,20 @@ test("night food buffer can be tuned by environment", () => withEnv({
   assert.equal(config.survival.nightFoodBuffer, 17);
 }));
 
+test("task no-progress watchdog can be tuned by environment", () => withEnv({
+  TASK_NO_PROGRESS_MS: "9000",
+  TASK_PROGRESS_MIN_DISTANCE: "0.75"
+}, () => {
+  const config = loadConfig();
+  assert.equal(config.survival.taskNoProgressMs, 9000);
+  assert.equal(config.survival.taskProgressMinDistance, 0.75);
+}));
+
 test("Python Brain service controls stay available when planner integration is off", () => withEnv({}, () => {
   const config = loadConfig();
   assert.equal(config.pythonBrain.enabled, false);
   assert.equal(config.pythonBrain.serviceEnabled, true);
+  assert.equal(config.pythonBrain.command, "");
 }));
 
 test("Python Brain config is opt-in and exposes service controls", () => withEnv({

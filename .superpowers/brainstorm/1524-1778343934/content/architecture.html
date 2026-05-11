@@ -1,0 +1,102 @@
+<h2>New Architecture Overview</h2>
+<p class="subtitle">Python LangGraph Hierarchical Planner + Node.js Action Executor + Priority Preemptive Scheduler</p>
+
+<div class="section">
+  <h3>Three-Layer Architecture</h3>
+  <div class="mockup">
+    <div class="mockup-header">Python Smart Brain (LangGraph + LangChain)</div>
+    <div class="mockup-body" style="font-size:13px;line-height:1.7;background:#1a1a2e;color:#e0e0e0;padding:20px;border-radius:6px;">
+      <div style="border:1px solid #e94560;padding:12px;margin-bottom:10px;border-radius:4px;background:rgba(233,69,96,0.08)">
+        <strong style="color:#e94560">Layer 3: Tree Composer</strong><br>
+        <span style="color:#aaa">TaskTree = compose(Task₁, Task₂, ..., Taskₙ)</span><br>
+        <span style="color:#888">e.g. BuildShelterTree = compose(Explore, CollectMaterials, PlaceBlocks, Craft)</span>
+      </div>
+      <div style="border:1px solid #f5a623;padding:12px;margin-bottom:10px;border-radius:4px;background:rgba(245,166,35,0.08)">
+        <strong style="color:#f5a623">Layer 2: Task Builder</strong><br>
+        <span style="color:#aaa">Task = compose(Action₁, Action₂, ..., Actionₙ | condition)</span><br>
+        <span style="color:#888">e.g. CollectWoodTask = compose(MoveTo(forest), Scan(LOG), loop: Chop(target) | until count ≥ N)</span>
+      </div>
+      <div style="border:1px solid #4ecca3;padding:12px;border-radius:4px;background:rgba(78,204,163,0.08)">
+        <strong style="color:#4ecca3">Layer 1: Primitive Actions (with params)</strong><br>
+        <span style="color:#aaa">Action = walk(direction, steps) | jump() | mine(block, tool) | place(block, pos) | eat(food) | attack(entity)</span><br>
+        <span style="color:#888">~30 primitive actions, each is a typed Python @dataclass → compiled to JSON → Node.js executes via Mineflayer</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Agent Graph (LangGraph)</h3>
+  <div class="mockup">
+    <div class="mockup-header">Hierarchical Task Planner with LLM-as-Judge Feedback</div>
+    <div class="mockup-body" style="font-size:13px;line-height:1.7;background:#1a1a2e;color:#e0e0e0;padding:20px;border-radius:6px;">
+      <pre style="color:#ccc;margin:0;white-space:pre-wrap">
+┌─────────────────────────────────────────────────┐
+│              StagePlanner (top-level)             │
+│  Input: compactState + memory + taskFeedback      │
+│  Output: stageAssessment + highLevelGoal          │
+│  Routes to: Safety | Combat | Survival | Engineer │
+└──────┬──────────────────────────────────────┬─────┘
+       │                                      │
+       ▼                                      ▼
+┌──────────────┐  ┌──────────────┐  ┌──────────────────┐
+│ SafetyWorker │  │SurvivalWorker│  │EngineeringWorker │
+│ (preemptive) │  │              │  │                  │
+│              │  │              │  │                  │
+│ TaskParams:  │  │ TaskParams:  │  │ TaskParams:       │
+│ escape(danger)│  │ collect(wood,│  │ craft(planks, 8) │
+│ eat(food)    │  │    count=6,  │  │ build(shelter,   │
+│ flee(mob, r) │  │    axe=stone)│  │   pos=12,64,-3)  │
+└──────┬───────┘  └──────┬───────┘  └──────┬───────────┘
+       │                 │                   │
+       └─────────────────┼───────────────────┘
+                         ▼
+              ┌─────────────────────┐
+              │   JudgeAgent        │  ← LLM-as-Judge
+              │   Post-hoc review:  │
+              │   Was decision OK?  │
+              │   What failed+why?  │
+              │   → ImprovementNote │
+              └─────────┬───────────┘
+                        ▼
+              ┌─────────────────────┐
+              │  PromptOptimizer    │
+              │  Accumulates notes  │
+              │  Injects into next  │
+              │  system prompt      │
+              └─────────────────────┘</pre>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Priority Preemptive Scheduler (replaces BehaviorExecutionQueue)</h3>
+  <div class="mockup">
+    <div class="mockup-header">Task Lifecycle with Preemption</div>
+    <div class="mockup-body" style="font-size:13px;line-height:1.7;background:#1a1a2e;color:#e0e0e0;padding:20px;border-radius:6px;">
+      <pre style="color:#ccc;margin:0;white-space:pre-wrap">
+Task States:  PENDING → RUNNING → COMPLETED
+                  ↓           ↓
+              PREEMPTED     FAILED
+                  ↓           ↓
+              RESUMED     RETRYING (up to N times)
+                             ↓
+                          GAVE_UP → notifies Planner
+
+Priority Tiers:
+  S (900+): Safety   — can preempt A/B/C/D, cannot be preempted
+  A (700+): Night/Wait — can preempt B/C/D
+  B (550+): Crafting/Tools
+  C (400+): Building/Farming
+  D (<400): Explore
+
+Preemption rule: new_task.priority > current_task.priority + 100
+  → save current_task state → run new_task → restore when done
+
+Anti-blocking:
+  - Duplicate detection: by (taskType + constructorArgs hash), not just taskType
+  - Stale detection: task in RUNNING > 90s without progress → force fail
+  - Slot limit: max 2 per taskType, max 8 total pending</pre>
+    </div>
+  </div>
+</div>

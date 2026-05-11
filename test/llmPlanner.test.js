@@ -134,6 +134,9 @@ test("buildPlannerContext compresses runtime state for dry-run planning", () => 
   assert.equal(context.agentPolicy.generalAgentCanRequestEmergencyTasks, false);
   assert.ok(context.safetyRules.some((rule) => /descend_from_platform/.test(rule)));
   assert.ok(context.safetyRules.some((rule) => /researchMissions/.test(rule)));
+  assert.ok(context.safetyRules.some((rule) => /localMinecraftKnowledge/.test(rule)));
+  assert.equal(context.localMinecraftKnowledge.source, "local_minecraft_survival_rag");
+  assert.ok(context.minecraftWiki.localRag.results.length > 0);
   assert.ok(context.researchMissions.some((mission) => mission.id === "platform_descent" && mission.tasks.includes("descend_from_platform")));
   assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "collect_wood" && treeClass.treeClass === "CollectWoodTree"));
   assert.ok(context.taskTreeClasses.some((treeClass) => treeClass.taskType === "collect_stone" && treeClass.parameterHints.patterns.includes("cobblestone_expands_to_stone")));
@@ -176,6 +179,22 @@ test("food strategy uses local exploration context instead of hard-coded berry p
   const unknownContext = buildPlannerContext(unknownInput);
   assert.equal(unknownContext.foodStrategy.recommendedSource, "explore_safe_food");
   assert.equal(unknownContext.foodStrategy.needsInitialExploration, true);
+});
+
+test("planner context preserves land animals when water entities are closer", () => {
+  const input = plannerInput();
+  input.snapshot.entities = [
+    ...Array.from({ length: 18 }, (_, index) => ({ name: "salmon", distance: index + 1, position: new Vec3(index + 1, 62, 0) })),
+    { name: "cow", distance: 38, position: new Vec3(38, 64, 0) },
+    { name: "horse", distance: 40, position: new Vec3(40, 64, 0) }
+  ];
+
+  const context = buildPlannerContext(input);
+
+  assert.equal(context.nearbyEntities.some((entity) => entity.name === "cow"), true);
+  assert.equal(context.nearbyEntities.some((entity) => entity.name === "horse"), true);
+  assert.equal(context.foodStrategy.recommendedSource, "land_animal");
+  assert.equal(context.foodStrategy.nearestLandFood.name, "cow");
 });
 
 test("planner parses JSON content and validates task whitelist", async () => {

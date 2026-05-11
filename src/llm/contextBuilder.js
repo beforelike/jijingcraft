@@ -1,5 +1,7 @@
 const { listAllowedTasks, listSurvivalSkills } = require("../knowledge/survivalSkills");
 const { compactMinecraftSurvivalGuide } = require("../knowledge/minecraftSurvivalGuide");
+const { compactMinecraftWikiKnowledge } = require("../knowledge/minecraftWikiKnowledge");
+const { compactLocalMinecraftKnowledge } = require("../knowledge/minecraftKnowledgeBase");
 const { compactMindcraftTaskKnowledge, taskParameterHintsForTask } = require("../knowledge/mindcraftTaskKnowledge");
 const { compactResearchMissionCatalog } = require("../knowledge/researchMissionCatalog");
 const { taskFunctionName, taskLevel, taskParameterSchema, taskPriority, taskTreeClassName } = require("../behavior/executableBehaviorTree");
@@ -26,6 +28,9 @@ function topInventoryItems(inventory = {}, limit = 20) {
     .slice(0, limit)
     .map(([name, count]) => ({ name, count: Number(count) }));
 }
+
+const LAND_FOOD_ENTITY_NAMES = new Set(["cow", "pig", "sheep", "chicken", "rabbit"]);
+const LAND_CONTEXT_ENTITY_NAMES = new Set([...LAND_FOOD_ENTITY_NAMES, "horse", "donkey", "mule", "llama"]);
 
 const GENERAL_AGENT_BLOCKED_TASKS = new Set([
   "escape_hazard",
@@ -73,10 +78,21 @@ function inventoryTotals(inventory = {}) {
 }
 
 function nearbyEntitySummary(entities = [], limit = 12) {
-  return entities
+  const sorted = entities
     .filter((entity) => entity?.name && Number.isFinite(entity.distance))
+    .sort((left, right) => left.distance - right.distance);
+  const selected = [];
+  for (const entity of sorted.filter((entry) => LAND_CONTEXT_ENTITY_NAMES.has(entry.name)).slice(0, Math.min(8, limit))) {
+    selected.push(entity);
+  }
+  for (const entity of sorted) {
+    if (selected.length >= limit) break;
+    if (selected.includes(entity)) continue;
+    selected.push(entity);
+  }
+
+  return selected
     .sort((left, right) => left.distance - right.distance)
-    .slice(0, limit)
     .map((entity) => ({
       name: entity.name,
       distance: round(entity.distance),
@@ -251,6 +267,12 @@ function navigationAnalysisSummary(analysis = null) {
     } : null,
     rim: positionSummary(analysis.rim),
     rimRise: Number.isFinite(Number(analysis.rimRise)) ? Number(analysis.rimRise) : null,
+    subsurface: analysis.subsurface ? {
+      openSkyHere: Boolean(analysis.subsurface.openSkyHere),
+      surfaceExit: positionSummary(analysis.subsurface.surfaceExit),
+      surfaceExitRise: Number.isFinite(Number(analysis.subsurface.surfaceExitRise)) ? Number(analysis.subsurface.surfaceExitRise) : null,
+      needsSurfaceRecovery: Boolean(analysis.subsurface.needsSurfaceRecovery)
+    } : null,
     routeOptions: Array.isArray(analysis.routeOptions) ? analysis.routeOptions.slice(0, 6) : []
   };
 }
@@ -454,6 +476,23 @@ function taskClassSummary(taskTypes = listAllowedTasks()) {
   }));
 }
 
+function minecraftKnowledgeQuery(snapshot = {}, decision = null, skillEnvelope = null) {
+  const taskType = decision?.type ?? skillEnvelope?.taskType ?? skillEnvelope?.plan?.nextTask ?? null;
+  const terrain = snapshot?.terrain ?? {};
+  const surroundings = snapshot?.botPerspective?.surroundings ?? {};
+  return [
+    taskType,
+    decision?.reason,
+    terrain.primaryGround,
+    ...(Array.isArray(terrain.ground) ? terrain.ground.slice(0, 5).map((entry) => entry.name) : []),
+    surroundings.feet,
+    surroundings.head,
+    surroundings.below,
+    snapshot?.fallingBlockHazard?.name,
+    snapshot?.environmentHazard?.name
+  ].filter(Boolean).join(" ");
+}
+
 function compactFullStateSummary({ snapshot, progress, memory, decision, dimension, controller, terrain, botPerspective, action } = {}) {
   const inventory = snapshot?.inventory ?? {};
   const totals = inventoryTotals(inventory);
@@ -512,6 +551,12 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
   const compactBehaviorLog = behaviorLogSummary(controller);
   const compactModeLog = modeLogSummary(controller);
   const compactExplorationStrategy = explorationStrategySummary(controller);
+  const minecraftSurvivalGuide = compactMinecraftSurvivalGuide();
+  const localMinecraftKnowledge = compactLocalMinecraftKnowledge({
+    query: minecraftKnowledgeQuery(snapshot, decision, skillEnvelope),
+    taskType: decision?.type ?? skillEnvelope?.taskType ?? skillEnvelope?.plan?.nextTask,
+    limit: 4
+  });
   const generalAgentAllowedTasks = listGeneralAgentAllowedTasks();
   const localRuleManagedTasks = listLocalRuleManagedTasks();
   return {
@@ -523,12 +568,21 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       "Output agentDirectives and taskRequests that task_agent can instantiate as behavior trees.",
       "When taskFeedback reports a blocked task, propose a different safe task that can gather information, change location, or prepare prerequisites instead of repeating the blocked task.",
       "For early food, do an environment-aware choice: request explore if food sources are unknown; prefer nearby land food when safe; prefer mature berry bushes over aquatic fish only when local terrain/water/oxygen risk makes fish unsafe or berries are clearly the safer visible source.",
-      "Use minecraftWiki.environmentRules and taskNotes: water with oxygen remaining is not a hazard, water columns are not escape pits, and dry-land tasks should first surface or find shore.",
+      "Use minecraftWiki.guide.environmentRules and taskNotes: water with oxygen remaining is not a hazard, water columns are not escape pits, and dry-land tasks should first surface or find shore.",
+      "Use minecraftWiki.knowledge topics falling_blocks and collect_stone before requesting collect_stone: sand/gravel/concrete_powder can fall, so beach downward digging must become surface-stone search or relocation.",
+      "Use localMinecraftKnowledge RAG hits and query_minecraft_knowledge before planning around sand, gravel, suffocation, collect_stone, or player-state fairness diagnostics.",
+      "If navigationAnalysis.kind is subsurface_enclosure or subsurface.needsSurfaceRecovery is true, let safety rules surface the bot before normal explore/resource tasks.",
       "Hard emergency tasks are local-rule/safety_agent managed; general_agent should not request localRuleManagedTasks directly.",
       "If terrain.descent.needsDescent is true, avoid ordinary progression requests until local safety rules have completed descend_from_platform.",
       "Use researchMissions only as evaluation references for task requests and success criteria; never assume a mission can bypass live safety rules."
     ],
-    minecraftWiki: compactMinecraftSurvivalGuide(),
+    minecraftWiki: {
+      ...minecraftSurvivalGuide,
+      guide: minecraftSurvivalGuide,
+      knowledge: compactMinecraftWikiKnowledge(),
+      localRag: localMinecraftKnowledge
+    },
+    localMinecraftKnowledge,
     researchMissions: compactResearchMissionCatalog(),
     taskParameterKnowledge: compactMindcraftTaskKnowledge(),
     compactState: compactFullStateSummary({
@@ -547,7 +601,8 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       food: snapshot?.food ?? null,
       ...maybeOxygenField(snapshot),
       position: positionSummary(snapshot?.position),
-      dimension: dimension ?? "unknown"
+      dimension: dimension ?? "unknown",
+      playerState: snapshot?.playerState ?? null
     },
     world: {
       timeOfDay: snapshot?.timeOfDay ?? null,
@@ -555,6 +610,12 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       environmentHazard: snapshot?.environmentHazard ? {
         name: snapshot.environmentHazard.name,
         distance: round(snapshot.environmentHazard.distance)
+      } : null,
+      fallingBlockHazard: snapshot?.fallingBlockHazard ? {
+        name: snapshot.fallingBlockHazard.name,
+        reason: snapshot.fallingBlockHazard.reason,
+        role: snapshot.fallingBlockHazard.role ?? null,
+        distance: round(snapshot.fallingBlockHazard.distance ?? 0)
       } : null,
       navigationTrap: Boolean(snapshot?.navigationTrap),
       navigationAnalysis: navigationAnalysisSummary(snapshot?.navigationAnalysis),

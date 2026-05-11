@@ -67,6 +67,7 @@ class BehaviorExecutionQueue {
     this.enabled = options.enabled !== false;
     this.maxTrees = Math.max(1, Number(options.maxTrees ?? 8));
     this.maxAgeMs = Math.max(1000, Number(options.maxAgeMs ?? 300000));
+    this.maxCurrentAgeMs = Math.max(1000, Number(options.maxCurrentAgeMs ?? options.currentMaxAgeMs ?? this.maxAgeMs));
     this.queue = [];
     this.current = null;
     this.completed = [];
@@ -85,6 +86,7 @@ class BehaviorExecutionQueue {
 
   enqueueTree(tree, options = {}) {
     if (!this.enabled) return this.reject("behavior_queue_disabled");
+    this.releaseStaleCurrent(Date.now(), "current_tree_stale_before_enqueue", { sourcePlanId: options.sourcePlanId ?? null });
     const candidate = clone(tree);
     candidate.priority = taskPriority(candidate.taskType);
     candidate.level = taskLevel(candidate.priority);
@@ -226,13 +228,26 @@ class BehaviorExecutionQueue {
     return false;
   }
 
+  releaseStaleCurrent(now = Date.now(), reason = "current_tree_stale", details = {}) {
+    if (!this.current?.startedAt) return null;
+    const startedAt = Date.parse(this.current.startedAt);
+    if (!Number.isFinite(startedAt) || now - startedAt <= this.maxCurrentAgeMs) return null;
+    return this.failCurrent(reason, {
+      ...details,
+      ageMs: now - startedAt,
+      maxCurrentAgeMs: this.maxCurrentAgeMs
+    });
+  }
+
   peek(now = Date.now()) {
     this.pruneExpired(now);
+    this.releaseStaleCurrent(now);
     return this.current ?? this.queue[0] ?? null;
   }
 
   startNext(details = {}) {
     this.pruneExpired();
+    this.releaseStaleCurrent(Date.now(), "current_tree_stale_before_start", details);
     if (this.current) return this.current;
     const tree = this.queue.shift();
     if (!tree) return null;
@@ -313,6 +328,7 @@ class BehaviorExecutionQueue {
     return {
       enabled: this.enabled,
       active: Boolean(this.current || this.queue.length),
+      maxCurrentAgeMs: this.maxCurrentAgeMs,
       currentTree: summarizeTree(this.current),
       pendingTrees: this.queue.map(summarizeTree),
       completedTrees: this.completed.map(summarizeTree),

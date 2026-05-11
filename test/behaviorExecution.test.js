@@ -58,6 +58,36 @@ test("hunt_food executable behavior tree uses search-track-approach-attack-colle
   assert.equal(validateExecutableBehaviorTree(tree).ok, true);
 });
 
+test("behavior tree runner fails stuck nodes with a bounded timeout", async () => {
+  const failures = [];
+  const phases = [];
+  let motionReset = false;
+  const runner = new ExecutableBehaviorTreeRunner({
+    stuck_action: async () => new Promise(() => {})
+  });
+  const tree = buildExecutableBehaviorTree("explore", {
+    nodes: [{ id: "stuck", label: "Stuck node", kind: "action", handler: "stuck_action", timeoutMs: 5 }]
+  });
+  const controller = {
+    config: { survival: { actionTimeoutMs: 100 } },
+    bot: { health: 20, food: 20, inventory: { items: () => [] }, entity: { position: { x: 0, y: 64, z: 0 } }, pvp: { stop() {} } },
+    logger: { warn() {} },
+    hasValidPosition: () => false,
+    markTaskPhase: (...args) => phases.push(args),
+    recordTaskObservation() {},
+    recordActionFailure: (...args) => failures.push(args),
+    resetMotion: () => { motionReset = true; },
+    markCurrentActionInterrupted() {}
+  };
+
+  const result = await runner.execute(tree, controller, { type: "explore" });
+
+  assert.equal(result, false);
+  assert.equal(motionReset, true);
+  assert.match(failures[0][1], /node_timeout:stuck/);
+  assert.equal(phases.some((entry) => entry[2] === "failed"), true);
+});
+
 test("task constructor args normalize aliases like function parameters", () => {
   assert.deepEqual(normalizeTaskConstructorArgs("explore", {
     args: { area: "10x10", radius: "10" },
@@ -85,6 +115,22 @@ test("behavior execution queue orders trees by preset priority", () => {
   assert.equal(started.taskType, "escape_pit");
   queue.completeCurrent("completed", { reason: "verified" });
   assert.equal(queue.getStatus().completedTrees[0].taskType, "escape_pit");
+});
+
+test("behavior execution queue releases stale current work before accepting a fresh duplicate task", () => {
+  const queue = new BehaviorExecutionQueue({ maxCurrentAgeMs: 5 });
+  queue.enqueueTask("collect_wood", { source: "python_brain", sourcePlanId: "old-plan" });
+  queue.startNext({ ruleDecision: "collect_wood" });
+  queue.current.startedAt = new Date(Date.now() - 5000).toISOString();
+
+  const result = queue.enqueueTask("collect_wood", { source: "python_brain", sourcePlanId: "new-plan" });
+  const status = queue.getStatus();
+
+  assert.equal(result.accepted, true);
+  assert.equal(status.completedTrees[0].taskType, "collect_wood");
+  assert.equal(status.completedTrees[0].status, "failed");
+  assert.equal(status.completedTrees[0].lastReason, "current_tree_stale_before_enqueue");
+  assert.equal(status.pendingTrees[0].sourcePlanId, "new-plan");
 });
 
 test("behavior runner executes action nodes and verifies wood gain", async () => {
@@ -287,6 +333,48 @@ test("hunt food tree uses dynamic entity tracking when controller supports it", 
   assert.equal(gotoEntityCall.entity, target);
   assert.equal(gotoEntityCall.range, 2.5);
   assert.equal(gotoEntityCall.options.target, "cow");
+});
+
+test("hunt food tree delegates attack to the controller pursuit helper", async () => {
+  const target = { id: 8, name: "pig", position: new Vec3(3, 64, 0) };
+  let inventoryItems = [];
+  let pursuitCall = null;
+  const bot = {
+    health: 20,
+    food: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => inventoryItems },
+    entities: { 8: target },
+    pvp: {
+      attack: () => assert.fail("tree should use pursuit helper instead of direct pvp attack"),
+      stop: () => {}
+    }
+  };
+  const controller = {
+    bot,
+    config: { survival: { actionTimeoutMs: 2000 } },
+    hasValidPosition: () => true,
+    markTaskPhase: () => {},
+    recordTaskObservation: () => {},
+    recordActionFailure: () => assert.fail("hunt tree should not fail"),
+    ensureHuntingWeapon: async () => true,
+    selectHuntFoodTarget: () => ({ animal: target, landAnimal: target, aquaticAnimal: null, candidates: [target] }),
+    gotoEntity: async () => true,
+    pursueAndAttackFoodTarget: async (entity, options) => {
+      pursuitCall = { entity, options };
+      delete bot.entities[8];
+      return { ok: true };
+    },
+    collectNearbyItems: async () => { inventoryItems = [{ name: "porkchop", count: 1 }]; },
+    wait: async () => {}
+  };
+  const runner = new ExecutableBehaviorTreeRunner();
+
+  const ok = await runner.execute(buildExecutableBehaviorTree("hunt_food"), controller, { type: "hunt_food" });
+
+  assert.equal(ok, true);
+  assert.equal(pursuitCall.entity, target);
+  assert.equal(pursuitCall.options.aquatic, false);
 });
 
 test("hunt food tree low oxygen escape failure is non-blocking feedback", async () => {

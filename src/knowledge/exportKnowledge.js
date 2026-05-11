@@ -3,12 +3,18 @@ const path = require("node:path");
 const { listSurvivalSkills, formatSkillSummaryXml } = require("./survivalSkills");
 const { listResearchMissions } = require("./researchMissionCatalog");
 const { createDefaultToolRegistry } = require("./toolRegistry");
+const { buildMinecraftRagCorpus } = require("./minecraftKnowledgeBase");
 
 const DEFAULT_OUTPUT_ROOT = path.resolve(__dirname, "..", "..", "data", "knowledge");
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+function writeJsonl(filePath, values) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${values.map((value) => JSON.stringify(value)).join("\n")}\n`, "utf8");
 }
 
 function skillText(skill, field, locale = "zh_cn") {
@@ -137,6 +143,12 @@ function exportKnowledge(outputRoot = DEFAULT_OUTPUT_ROOT) {
     files.push(filePath);
   };
 
+  const writeJsonLines = (relativePath, values) => {
+    const filePath = path.join(outputRoot, relativePath);
+    writeJsonl(filePath, values);
+    files.push(filePath);
+  };
+
   write("survival-skills.json", {
     generatedFrom: ["TouhouLittleMaid skill registry", "Patchouli book format", "Ponderer scene DSL", "Voyager skill loop", "Malmo mission pattern", "Minecraft_AI query feedback"],
     skillSummaryXml: formatSkillSummaryXml(skills),
@@ -149,6 +161,8 @@ function exportKnowledge(outputRoot = DEFAULT_OUTPUT_ROOT) {
     generatedFrom: ["Project Malmo mission observations/rewards/quits", "Minecraft_AI action feedback loop", "current Mineflayer test pipeline"],
     missions: researchMissions
   });
+
+  writeJsonLines("minecraft-survival-rag.jsonl", buildMinecraftRagCorpus());
 
   write(path.join("patchouli", "bot_survival_guide", "book.json"), buildPatchouliBook());
   for (const category of [...new Set(skills.map((skill) => skill.category))]) {

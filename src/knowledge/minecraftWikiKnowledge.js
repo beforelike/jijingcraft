@@ -1,4 +1,5 @@
 const TREE_BEARING_SURFACE_PATTERN = /(_log|_wood|_leaves|_stem|_hyphae)$/;
+const FALLING_BLOCK_NAMES = new Set(["sand", "red_sand", "gravel", "suspicious_sand", "suspicious_gravel"]);
 
 const MINECRAFT_WIKI_KNOWLEDGE = Object.freeze({
   source: "project_mc_wiki_knowledge_base",
@@ -58,6 +59,29 @@ const MINECRAFT_WIKI_KNOWLEDGE = Object.freeze({
         "Do not classify ordinary water as collect_wood progress.",
         "Low oxygen changes priority to escape_hazard or oxygen recovery."
       ]
+    },
+    falling_blocks: {
+      summary: "Sand, red sand, gravel, suspicious sand, suspicious gravel, and concrete powder are gravity-affected blocks.",
+      taskRules: [
+        "If the support below sand or gravel is removed, it can turn into a falling block and drop into the opened space.",
+        "Falling sand or gravel can bury a player or mob and cause suffocation damage.",
+        "Do not stand on sand or gravel while mining below or beside its support column.",
+        "Do not mine a collect_stone target when sand, red_sand, gravel, suspicious_sand, suspicious_gravel, or concrete_powder is above the target column.",
+        "On beach, desert, riverbed, or gravel shore terrain, search for exposed stone, stony shore, cave mouth, cliff, or rocky hillside before starting a stair mine probe."
+      ],
+      blockNames: ["sand", "red_sand", "gravel", "suspicious_sand", "suspicious_gravel", "*_concrete_powder"],
+      planningHint: "When task=collect_stone and nearby surface blocks are sand or gravel, relocate/search for exposed stone instead of digging downward through the beach layer."
+    },
+    collect_stone: {
+      summary: "Early stone collection should prefer exposed stone and safe side stands; sand and gravel cover means the local terrain can collapse.",
+      taskRules: [
+        "Use a wooden pickaxe or better for stone; fists do not collect cobblestone.",
+        "Prefer exposed surface stone, cave mouths, stony shores, cliffs, or rocky hillsides before making a mine probe.",
+        "Mine from a safe side stand, not from directly above the target block.",
+        "Never treat sand, red_sand, gravel, or concrete_powder like dirt when digging down; they can fall after support changes.",
+        "If only sand or gravel terrain is visible, explore away from the beach/desert/riverbed and try surface-stone search again."
+      ],
+      planningHint: "For collect_stone, reject beach downward digging and choose surface_stone_search or exploration toward rocky terrain."
     }
   }
 });
@@ -76,6 +100,11 @@ function isTreeBearingSurfaceBlock(blockName) {
     || blockName === "mangrove_roots"
     || blockName === "mushroom_stem"
   );
+}
+
+function isFallingBlockName(blockName = "") {
+  const normalized = String(blockName).toLowerCase();
+  return FALLING_BLOCK_NAMES.has(normalized) || normalized.endsWith("_concrete_powder");
 }
 
 function woodLikelihoodForBiome(biomeName = "") {
@@ -128,6 +157,9 @@ function queryMinecraftWikiKnowledge(params = {}) {
     result.lowWoodBiomes = [...MINECRAFT_WIKI_KNOWLEDGE.topics.wood.lowWoodBiomes];
     result.treeBlocks = [...MINECRAFT_WIKI_KNOWLEDGE.topics.wood.treeBlocks];
   }
+  if (topicId === "falling_blocks" || topicId === "collect_stone" || params.taskType === "collect_stone") {
+    result.fallingBlocks = [...MINECRAFT_WIKI_KNOWLEDGE.topics.falling_blocks.blockNames];
+  }
 
   return clone(result);
 }
@@ -135,6 +167,7 @@ function queryMinecraftWikiKnowledge(params = {}) {
 module.exports = {
   MINECRAFT_WIKI_KNOWLEDGE,
   compactMinecraftWikiKnowledge,
+  isFallingBlockName,
   isTreeBearingSurfaceBlock,
   listMinecraftWikiTopics,
   queryMinecraftWikiKnowledge,

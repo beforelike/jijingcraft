@@ -549,9 +549,19 @@ const DEFAULT_ACTION_HANDLERS = {
     return true;
   },
 
-  async scan_hunt_targets({ controller, context }) {
+  async scan_hunt_targets({ controller, context, tree, decision }) {
     if (typeof controller.selectHuntFoodTarget === "function") {
-      const selected = controller.selectHuntFoodTarget();
+      const parameters = tree?.constructorArgs ?? tree?.parameters ?? decision?.constructorArgs ?? decision?.taskParameters ?? {};
+      const selectionOptions = typeof controller.huntFoodSelectionOptions === "function"
+        ? controller.huntFoodSelectionOptions({ ...decision, constructorArgs: parameters, taskParameters: parameters })
+        : { parameters, searchRadius: controller.config?.survival?.foodSearchRadius ?? 32 };
+      const selected = controller.selectHuntFoodTarget({
+        searchRadius: selectionOptions.searchRadius,
+        allowAquaticHunt: selectionOptions.allowAquaticHunt,
+        maxAquaticDistance: selectionOptions.maxAquaticDistance,
+        maxAquaticVerticalDelta: selectionOptions.maxAquaticVerticalDelta,
+        maxLandDistance: selectionOptions.maxLandDistance
+      });
       context.huntSelection = selected;
       const selectedTarget = selected?.animal ?? selected?.target ?? selected?.entity;
       context.huntTarget = selectedTarget?.position ? selectedTarget : (selected?.position ? selected : null);
@@ -590,6 +600,8 @@ const DEFAULT_ACTION_HANDLERS = {
     }
 
     const isAquatic = AQUATIC_HUNT_TARGETS.has(target.name);
+    const currentDistance = target.position?.distanceTo?.(controller.bot?.entity?.position ?? target.position) ?? Infinity;
+    if (isAquatic && currentDistance <= 18) return true;
     let reached = false;
     if (typeof controller.gotoEntity === "function") {
       reached = await controller.gotoEntity(target, isAquatic ? 4 : 2.5, {
@@ -640,6 +652,12 @@ const DEFAULT_ACTION_HANDLERS = {
     if (!controller.bot?.pvp?.attack || !controller.bot?.pvp?.stop) return { ok: false, reason: "pvp_unavailable" };
 
     const timeoutMs = controller.config?.survival?.actionTimeoutMs ?? 9000;
+    if (typeof controller.pursueAndAttackFoodTarget === "function") {
+      const isAquatic = AQUATIC_HUNT_TARGETS.has(target.name);
+      const result = await controller.pursueAndAttackFoodTarget(target, { aquatic: isAquatic, timeoutMs, manualSwimRange: isAquatic ? 18 : undefined, strategy: isAquatic ? "behavior_tree_aquatic" : "behavior_tree_land" });
+      return result.ok ? true : { ok: false, reason: result.reason ?? "hunt_target_survived" };
+    }
+
     const deadline = Date.now() + timeoutMs;
     controller.bot.pvp.attack(target);
     try {
@@ -658,6 +676,10 @@ const DEFAULT_ACTION_HANDLERS = {
   },
 
   async collect_hunt_drops({ controller }) {
+    if (typeof controller.collectHuntDrops === "function") {
+      await controller.collectHuntDrops({ maxDistance: 18, allowWater: true, timeoutMs: 7000 });
+      return true;
+    }
     await controller.collectNearbyItems?.();
     return true;
   },
@@ -811,7 +833,16 @@ class ExecutableBehaviorTreeRunner {
     controller.markTaskPhase?.(phaseId, node.label ?? node.id, "active", { behaviorTreeId: tree.id, nodeId: node.id, kind: node.kind, iteration: context.loopIteration ?? null });
     const handler = this.actionHandlers[node.handler];
     if (!handler) throw new Error(`unknown_behavior_action:${node.handler}`);
-    const result = await handler({ controller, tree, node, decision, context });
+    let result;
+    try {
+      result = await this.runNodeHandler(handler, { controller, tree, node, decision, context });
+    } catch (error) {
+      const reason = error.code === "BEHAVIOR_NODE_TIMEOUT" ? `node_timeout:${node.id}` : `node_error:${node.id}:${error.message}`;
+      controller.markTaskPhase?.(phaseId, node.label ?? node.id, "failed", { behaviorTreeId: tree.id, reason });
+      controller.recordTaskObservation?.("behavior_tree", `node ${node.id} failed`, { reason, treeId: tree.id }, "warn");
+      if (!options.deferFailureFeedback) this.recordNodeFailure(reason, runtime);
+      return { ok: false, reason };
+    }
     if (result && typeof result === "object") Object.assign(context, result);
     if (result === false || result?.ok === false) {
       const reason = result?.reason ?? `node_failed:${node.id}`;
@@ -825,6 +856,43 @@ class ExecutableBehaviorTreeRunner {
       reason: result?.reason ?? null
     });
     return { ok: true };
+  }
+
+  async runNodeHandler(handler, runtime) {
+    const { controller, tree, node } = runtime;
+    const timeoutMs = this.nodeTimeoutMs(node, tree, controller);
+    if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return handler(runtime);
+    let timeoutHandle = null;
+    const timeout = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        const error = new Error(`behavior node timed out after ${timeoutMs}ms`);
+        error.code = "BEHAVIOR_NODE_TIMEOUT";
+        reject(error);
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([Promise.resolve().then(() => handler(runtime)), timeout]);
+    } catch (error) {
+      if (error.code === "BEHAVIOR_NODE_TIMEOUT") {
+        controller.logger?.warn?.(`behavior_tree_node_timeout; task=${tree.taskType}; node=${node.id}; timeoutMs=${timeoutMs}`);
+        controller.markCurrentActionInterrupted?.(1000);
+        controller.resetMotion?.();
+        controller.bot?.pvp?.stop?.();
+      }
+      throw error;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+  }
+
+  nodeTimeoutMs(node, tree, controller) {
+    if (node.timeoutMs !== undefined) return Math.max(50, Number(node.timeoutMs) || 0);
+    const baseTimeout = Number(controller?.config?.survival?.actionTimeoutMs ?? 25000);
+    const safeBase = Number.isFinite(baseTimeout) ? baseTimeout : 25000;
+    if (node.kind === "sense" || node.kind === "setup" || node.kind === "check" || node.kind === "condition") return Math.min(safeBase, 5000);
+    if (tree?.taskType === "wait_out_night" || tree?.taskType === "hold_position") return Math.max(safeBase, 60000);
+    if (node.kind === "loop") return Math.max(safeBase, 30000);
+    return Math.max(1000, safeBase);
   }
 
   loopConditionMet(condition, runtime) {

@@ -1,4 +1,5 @@
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
 const path = require("node:path");
 
 function splitArgs(rawArgs) {
@@ -14,6 +15,14 @@ function nowIso() {
 
 function isHealthCheckAccessLog(message) {
   return /"GET \/health(?:\?[^" ]*)? HTTP\/1\.[01]" 200 OK/.test(String(message ?? ""));
+}
+
+function defaultPythonCommand(cwd = process.cwd()) {
+  const root = path.resolve(cwd);
+  const candidates = process.platform === "win32"
+    ? [path.join(root, ".venv", "Scripts", "python.exe")]
+    : [path.join(root, ".venv", "bin", "python")];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? "python";
 }
 
 class PythonBrainServiceManager {
@@ -88,7 +97,7 @@ class PythonBrainServiceManager {
         managed: this.managed,
         status: this.child ? "process_running" : (health.ok ? "reachable" : (this.enabled ? "stopped" : "disabled")),
         url: this.url,
-        command: this.config.command ?? "python",
+        command: this.config.command || defaultPythonCommand(this.cwd),
         pid: this.child?.pid ?? null,
         health,
         lastExit: this.lastExit,
@@ -105,7 +114,7 @@ class PythonBrainServiceManager {
     const reachable = await this.healthCheck(1200);
     if (reachable.ok) return { ok: true, status: "already_reachable", health: reachable };
 
-    const command = this.config.command || "python";
+    const command = this.config.command || defaultPythonCommand(this.cwd);
     const args = splitArgs(this.config.args);
     const env = {
       ...process.env,
@@ -115,7 +124,7 @@ class PythonBrainServiceManager {
     const child = this.spawnImpl(command, args, {
       cwd: path.resolve(this.cwd),
       env,
-      shell: process.platform === "win32",
+      shell: false,
       windowsHide: true
     });
     this.child = child;
@@ -168,6 +177,7 @@ function createPythonBrainServiceManager(config, logger, options = {}) {
 
 module.exports = {
   PythonBrainServiceManager,
+  defaultPythonCommand,
   createPythonBrainServiceManager,
   isHealthCheckAccessLog,
   splitArgs

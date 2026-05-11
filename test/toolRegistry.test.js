@@ -87,6 +87,7 @@ test("default tool registry exposes safe survival skill tools", async () => {
   assert.deepEqual(tools.map((tool) => tool.id), [
     "list_survival_skills",
     "get_survival_skill",
+    "query_minecraft_knowledge",
     "plan_survival_skill",
     "validate_task_sequence",
     "recommend_survival_skill"
@@ -103,6 +104,10 @@ test("default tool registry exposes safe survival skill tools", async () => {
 
   const recommendation = await registry.callTool("recommend_survival_skill", { taskType: "collect_stone" });
   assert.equal(recommendation.result.primarySkillId, "early_stone_tools");
+
+  const knowledge = await registry.callTool("query_minecraft_knowledge", { taskType: "collect_stone", query: "sand support falling block" });
+  assert.equal(knowledge.ok, true);
+  assert.ok(knowledge.result.results.some((entry) => entry.id === "falling_blocks_support_gravity"));
 });
 
 test("default tool registry reports bad calls without throwing to callers", async () => {

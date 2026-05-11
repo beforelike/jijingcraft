@@ -75,6 +75,22 @@ test("controller skips stale queued heads when a later task matches the current 
   assert.match(queueStatus.completedTasks[0].lastReason, /stale_hunt_food_before_collect_wood/);
 });
 
+test("LLM task queue releases stale current work before accepting a new plan", () => {
+  const queue = new LlmTaskQueue({ taskQueueEnabled: true, taskQueueCurrentMaxAgeMs: 5 });
+  queue.enqueuePlan({ goal: "old wood", tasks: ["collect_wood"] });
+  queue.startNext({ ruleDecision: "collect_wood" });
+  queue.current.startedAt = new Date(Date.now() - 5000).toISOString();
+
+  const result = queue.enqueuePlan({ goal: "fresh explore", tasks: ["explore"] });
+  const status = queue.getStatus();
+
+  assert.equal(result.accepted, true);
+  assert.equal(result.releasedCurrent.type, "collect_wood");
+  assert.equal(result.releasedCurrent.status, "failed");
+  assert.equal(result.releasedCurrent.lastReason, "current_task_stale_before_enqueue");
+  assert.deepEqual(status.pendingTasks.map((task) => task.type), ["explore"]);
+});
+
 test("controller lets LLM queued recovery task replace a blocked rule task", () => {
   const controller = createController();
   controller.taskFeedback.blockedTasks.collect_wood = {

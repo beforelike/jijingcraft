@@ -63,6 +63,7 @@ function buildPythonBrainRequest(context = {}) {
     terrain: cloneJson(snapshot.terrain),
     environmentHazard: cloneJson(snapshot.environmentHazard),
     navigationTrap: Boolean(snapshot.navigationTrap),
+    navigationAnalysis: cloneJson(snapshot.navigationAnalysis),
     isInLava: Boolean(snapshot.isInLava),
     isBodyInWater: Boolean(snapshot.isBodyInWater)
   };

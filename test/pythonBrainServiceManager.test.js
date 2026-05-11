@@ -1,11 +1,25 @@
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { PassThrough } = require("node:stream");
 const test = require("node:test");
-const { PythonBrainServiceManager, isHealthCheckAccessLog, splitArgs } = require("../src/services/pythonBrainServiceManager");
+const { PythonBrainServiceManager, defaultPythonCommand, isHealthCheckAccessLog, splitArgs } = require("../src/services/pythonBrainServiceManager");
 
 test("splitArgs keeps the module startup command stable", () => {
   assert.deepEqual(splitArgs("-m python_brain.main"), ["-m", "python_brain.main"]);
+});
+
+test("service manager prefers project virtualenv Python by default", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "brain-venv-"));
+  const pythonPath = process.platform === "win32"
+    ? path.join(root, ".venv", "Scripts", "python.exe")
+    : path.join(root, ".venv", "bin", "python");
+  fs.mkdirSync(path.dirname(pythonPath), { recursive: true });
+  fs.writeFileSync(pythonPath, "");
+
+  assert.equal(defaultPythonCommand(root), pythonPath);
 });
 
 test("service manager reports reachable Python Brain health", async () => {
@@ -34,8 +48,8 @@ test("service manager can start and stop a managed child process", async () => {
   fakeChild.kill = () => fakeChild.emit("exit", 0, null);
   const manager = new PythonBrainServiceManager({ enabled: true, command: "python", args: "-m python_brain.main" }, console, {
     fetchImpl: async () => { throw new Error("not reachable"); },
-    spawnImpl: (command, args) => {
-      spawned = { command, args };
+    spawnImpl: (command, args, options) => {
+      spawned = { command, args, shell: options.shell };
       return fakeChild;
     }
   });
@@ -45,7 +59,7 @@ test("service manager can start and stop a managed child process", async () => {
 
   assert.equal(started.ok, true);
   assert.equal(started.pid, 1234);
-  assert.deepEqual(spawned, { command: "python", args: ["-m", "python_brain.main"] });
+  assert.deepEqual(spawned, { command: "python", args: ["-m", "python_brain.main"], shell: false });
   assert.equal(stopped.status, "stopping");
 });
 

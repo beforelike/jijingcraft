@@ -52,6 +52,7 @@ class BotSnapshot(BrainBaseModel):
     terrain: dict[str, Any] | None = None
     environmentHazard: dict[str, Any] | None = None
     navigationTrap: bool = False
+    navigationAnalysis: dict[str, Any] | None = None
     isInLava: bool = False
     isBodyInWater: bool = False
 
@@ -152,3 +153,5 @@ class PlanResponse(BrainBaseModel):
     constraints: list[str] = Field(default_factory=list)
     confidence: float = 0.8
     durationMs: float = 0.0
+    decisionMetrics: dict[str, Any] = Field(default_factory=dict)
+    feedbackPolicy: dict[str, Any] = Field(default_factory=dict)

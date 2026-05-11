@@ -5,6 +5,7 @@ const {
   listSurvivalSkills,
   validateTaskSequence
 } = require("./survivalSkills");
+const { queryLocalMinecraftKnowledge } = require("./minecraftKnowledgeBase");
 const { buildSkillPlan, recommendSkillsForTask } = require("./skillPlanner");
 
 function clone(value) {
@@ -133,6 +134,28 @@ function createDefaultToolRegistry() {
         if (!skill) throw new Error(`unknown skill: ${skillId}`);
         return skill;
       }
+    },
+    {
+      id: "query_minecraft_knowledge",
+      summary: "Query the local Minecraft survival RAG corpus for mechanics, safety rules, and player-state diagnostics.",
+      parameters: {
+        query: "optional natural-language search text",
+        taskType: "optional task id such as collect_stone or escape_hazard",
+        topic: "optional topic such as falling_blocks, collect_stone, player_state, or damage",
+        limit: "optional result limit, defaults to 4"
+      },
+      schema: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "optional natural-language search text" },
+          taskType: { type: "string", description: "optional task id such as collect_stone or escape_hazard" },
+          topic: { type: "string", description: "optional topic such as falling_blocks, collect_stone, player_state, or damage" },
+          limit: { type: "integer", minimum: 1, maximum: 12, description: "optional result limit, defaults to 4" }
+        },
+        additionalProperties: false
+      },
+      tags: ["knowledge", "rag", "minecraft", "safety"],
+      handler: (params = {}) => queryLocalMinecraftKnowledge(params)
     },
     {
       id: "plan_survival_skill",
