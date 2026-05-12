@@ -118,6 +118,21 @@ function terrainSummary(terrain = null) {
     nearbyWater: compactResources(terrain.nearbyWater),
     matureBerryBushes: compactResources(terrain.matureBerryBushes),
     nearbyLogs: compactResources(terrain.nearbyLogs),
+    spatialStructure: terrain.spatialStructure ? {
+      type: terrain.spatialStructure.type ?? null,
+      summary: terrain.spatialStructure.summary ?? null,
+      confined: Boolean(terrain.spatialStructure.confined),
+      enclosed: Boolean(terrain.spatialStructure.enclosed),
+      currentBodyOpen: Boolean(terrain.spatialStructure.currentBodyOpen),
+      currentStandSafe: Boolean(terrain.spatialStructure.currentStandSafe),
+      connectedStandCount: Number(terrain.spatialStructure.connectedStandCount) || 0,
+      exitCount: Number(terrain.spatialStructure.exitCount) || 0,
+      exitDirections: Array.isArray(terrain.spatialStructure.exitDirections) ? terrain.spatialStructure.exitDirections.slice(0, 4) : [],
+      blockedSides: Number(terrain.spatialStructure.blockedSides) || 0,
+      verticalOpenBlocks: Number(terrain.spatialStructure.verticalOpenBlocks) || 0,
+      openSky: Boolean(terrain.spatialStructure.openSky),
+      recommendedAction: terrain.spatialStructure.recommendedAction ?? null
+    } : null,
     exactLocal: terrain.exactLocal ? {
       radius: Number(terrain.exactLocal.radius) || 0,
       width: Number(terrain.exactLocal.width) || 0,
@@ -322,6 +337,7 @@ function compactEntityTypes(entities = []) {
 function surroundingsSummary(terrain = null, botPerspective = null) {
   const centerCell = terrain?.exactLocal?.cells?.find((cell) => Number(cell.dx) === 0 && Number(cell.dz) === 0) ?? null;
   const firstSolidAhead = (botPerspective?.frontBlocks ?? []).find((block) => block.solid && block.name !== "air") ?? null;
+  const spatial = terrain?.spatialStructure ?? null;
   return {
     below: centerCell?.ground ?? null,
     legs: centerCell?.feet ?? null,
@@ -333,7 +349,18 @@ function surroundingsSummary(terrain = null, botPerspective = null) {
     } : null,
     safeStandCount: Number(terrain?.safeStandCount) || 0,
     waterSamples: Number(terrain?.waterSamples) || 0,
-    hazardSamples: Number(terrain?.damagingSamples) || 0
+    hazardSamples: Number(terrain?.damagingSamples) || 0,
+    spatial: spatial ? {
+      type: spatial.type ?? null,
+      confined: Boolean(spatial.confined),
+      enclosed: Boolean(spatial.enclosed),
+      exitCount: Number(spatial.exitCount) || 0,
+      exitDirections: Array.isArray(spatial.exitDirections) ? spatial.exitDirections.slice(0, 4) : [],
+      connectedStandCount: Number(spatial.connectedStandCount) || 0,
+      verticalOpenBlocks: Number(spatial.verticalOpenBlocks) || 0,
+      openSky: Boolean(spatial.openSky),
+      recommendedAction: spatial.recommendedAction ?? null
+    } : null
   };
 }
 
@@ -484,6 +511,8 @@ function minecraftKnowledgeQuery(snapshot = {}, decision = null, skillEnvelope =
     taskType,
     decision?.reason,
     terrain.primaryGround,
+    terrain.spatialStructure?.type,
+    terrain.spatialStructure?.recommendedAction,
     ...(Array.isArray(terrain.ground) ? terrain.ground.slice(0, 5).map((entry) => entry.name) : []),
     surroundings.feet,
     surroundings.head,
@@ -569,6 +598,7 @@ function buildPlannerContext({ snapshot, progress, memory, decision, skillEnvelo
       "When taskFeedback reports a blocked task, propose a different safe task that can gather information, change location, or prepare prerequisites instead of repeating the blocked task.",
       "For early food, do an environment-aware choice: request explore if food sources are unknown; prefer nearby land food when safe; prefer mature berry bushes over aquatic fish only when local terrain/water/oxygen risk makes fish unsafe or berries are clearly the safer visible source.",
       "Use minecraftWiki.guide.environmentRules and taskNotes: water with oxygen remaining is not a hazard, water columns are not escape pits, and dry-land tasks should first surface or find shore.",
+      "Use world.terrain.spatialStructure to understand the bot's local room/corridor/enclosure geometry; if it is confined or enclosed, choose tasks that open/use an exit or avoid complex navigation before normal work.",
       "Use minecraftWiki.knowledge topics falling_blocks and collect_stone before requesting collect_stone: sand/gravel/concrete_powder can fall, so beach downward digging must become surface-stone search or relocation.",
       "Use localMinecraftKnowledge RAG hits and query_minecraft_knowledge before planning around sand, gravel, suffocation, collect_stone, or player-state fairness diagnostics.",
       "If navigationAnalysis.kind is subsurface_enclosure or subsurface.needsSurfaceRecovery is true, let safety rules surface the bot before normal explore/resource tasks.",

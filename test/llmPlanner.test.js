@@ -37,6 +37,21 @@ function plannerInput() {
         nearbyWater: [{ name: "water", position: new Vec3(18, 63, 4) }],
         matureBerryBushes: [{ name: "sweet_berry_bush", position: new Vec3(-6, 64, 9) }],
         nearbyLogs: [{ name: "spruce_log", position: new Vec3(12, 64, -3) }],
+        spatialStructure: {
+          type: "enclosed_room",
+          summary: "space=enclosed_room; connectedStand=6; exits=0; blockedSides=3; verticalOpen=2; openSky=false; action=create_or_open_exit",
+          confined: true,
+          enclosed: true,
+          currentBodyOpen: true,
+          currentStandSafe: true,
+          connectedStandCount: 6,
+          exitCount: 0,
+          exitDirections: [],
+          blockedSides: 3,
+          verticalOpenBlocks: 2,
+          openSky: false,
+          recommendedAction: "create_or_open_exit"
+        },
         exactLocal: {
           radius: 5,
           width: 11,
@@ -105,6 +120,9 @@ test("buildPlannerContext compresses runtime state for dry-run planning", () => 
   assert.equal(context.world.terrain.waterSamples, 7);
   assert.deepEqual(context.world.terrain.nearbyWater[0].position, { x: 18, y: 63, z: 4 });
   assert.deepEqual(context.world.terrain.matureBerryBushes[0].position, { x: -6, y: 64, z: 9 });
+  assert.equal(context.world.terrain.spatialStructure.type, "enclosed_room");
+  assert.equal(context.world.terrain.spatialStructure.confined, true);
+  assert.equal(context.world.terrain.spatialStructure.recommendedAction, "create_or_open_exit");
   assert.equal(context.world.terrain.exactLocal.width, 11);
   assert.equal(context.world.terrain.regional.diameter, 200);
   assert.equal(context.world.terrain.descent.needsDescent, true);
@@ -121,6 +139,7 @@ test("buildPlannerContext compresses runtime state for dry-run planning", () => 
   assert.equal(context.compactState.action.current, "hunt_food");
   assert.equal(context.compactState.surroundings.below, "snow_block");
   assert.equal(context.compactState.surroundings.head, "air");
+  assert.equal(context.compactState.surroundings.spatial.type, "enclosed_room");
   assert.equal(context.compactState.nearby.entityTypes[0].name, "cow");
   assert.ok(context.taskParameterKnowledge.commandMappings.some((mapping) => mapping.command === "!collectBlocks" && mapping.mapsTo.includes("collect_stone")));
   assert.equal(context.controller.taskFeedback.blockedTasks[0].taskType, "hunt_food");

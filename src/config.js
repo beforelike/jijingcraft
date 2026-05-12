@@ -130,8 +130,14 @@ function normalizeMinecraftVersion(rawVersion, warn = console.warn) {
   return version;
 }
 
+// Pin to a Java Edition version that the installed mineflayer release fully supports.
+// 1.21.1 is the most recent version where update_health/oxygen metadata/server_difficulty/abilities
+// are all parsed correctly by mineflayer 4.37.x; newer versions (1.21.6+) have incomplete protocol
+// coverage and break health/oxygen readings even though they appear in supportedVersions.
+const DEFAULT_MC_VERSION = "1.21.1";
+
 function loadConfig() {
-  const rawVersion = readString("MC_VERSION", "");
+  const rawVersion = readString("MC_VERSION", DEFAULT_MC_VERSION);
   return {
     host: readString("MC_HOST", "localhost"),
     port: readInteger("MC_PORT", 8000),

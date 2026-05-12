@@ -56,6 +56,10 @@ function decideNextTask(snapshot, config) {
   const hasUsableStarterShelter = hasStarterShelter
     && snapshot.progress?.isNearStarterShelter !== false
     && snapshot.progress?.isStarterShelterDefensible !== false;
+  const hasUnfinishedStarterShelter = survival.buildShelter !== false
+    && !hasUsableStarterShelter
+    && !hasStarterShelter
+    && Boolean(snapshot.progress?.starterShelterPosition);
   const hasCropPlot = Boolean(snapshot.progress?.hasCropPlot) || (snapshot.progress?.plantedCrops ?? 0) >= cropPlotTarget;
   const hasAnimalPen = Boolean(snapshot.progress?.hasAnimalPen);
   const hasCraftingTableAccess = Boolean(snapshot.progress?.hasCraftingTable) || hasAny(inventory, "crafting_table");
@@ -104,6 +108,27 @@ function decideNextTask(snapshot, config) {
     return { type: "escape_hazard", reason: `damaging block ${snapshot.environmentHazard.name} is too close` };
   }
 
+  if (snapshot.fallingBlockHazard) {
+    return {
+      type: "escape_hazard",
+      reason: `falling block entrapment: ${snapshot.fallingBlockHazard.name}; ${snapshot.fallingBlockHazard.reason ?? "body space obstructed"}`
+    };
+  }
+
+  if (snapshot.health <= survival.criticalHealth && hasInventoryFood) {
+    return { type: "eat_food", reason: "critical health and food is available" };
+  }
+
+  if (snapshot.health <= 2) {
+    const criticalThreatRadius = snapshot.isNight && !hasUsableStarterShelter
+      ? nightThreatPressureRadius
+      : immediateThreatRadius + 2;
+    if (hostile && hostile.distance <= criticalThreatRadius) {
+      return { type: "evade_hostiles", reason: `critical health, no food, and ${hostile.name} is ${hostile.distance.toFixed(1)} blocks away`, target: hostile.name };
+    }
+    return { type: "recover_starvation", reason: "near-death health; stop movement and search only immediate safe food" };
+  }
+
   if (snapshot.navigationTrap) {
     return { type: "escape_pit", reason: snapshot.navigationAnalysis?.summary ?? "bot appears trapped by local terrain" };
   }
@@ -120,8 +145,11 @@ function decideNextTask(snapshot, config) {
     };
   }
 
-  if (snapshot.health <= survival.criticalHealth && hasAny(inventory, FOOD_ITEMS)) {
-    return { type: "eat_food", reason: "critical health and food is available" };
+  if (!snapshot.isNight && snapshot.terrain?.spatialStructure?.recommendedAction === "create_or_open_exit") {
+    return {
+      type: "create_or_open_exit",
+      reason: snapshot.terrain.spatialStructure.summary ?? "confined space needs an exit before normal work"
+    };
   }
 
   if (snapshot.health <= survival.criticalHealth) {
@@ -189,6 +217,13 @@ function decideNextTask(snapshot, config) {
     return { type: "wait_out_night", reason: "staying inside starter shelter until daylight" };
   }
 
+  if (snapshot.isNight && !hasUsableStarterShelter && (!hostile || hostile.distance > immediateThreatRadius)) {
+    if (hasAny(inventory, SHELTER_BLOCK_ITEMS)) {
+      return { type: "wait_out_night", reason: "nighttime resource gathering is too dangerous; seal and wait for daylight" };
+    }
+    return { type: "hold_position", reason: "nighttime resource gathering is too dangerous; hold position until daylight" };
+  }
+
   if (!snapshot.isNight && hostile && hostile.distance <= Math.max(3.2, Math.min(4.5, immediateThreatRadius * 0.55)) && hasWeapon && snapshot.health > survival.criticalHealth) {
     return { type: "defend_self", reason: `${hostile.name} is ${hostile.distance.toFixed(1)} blocks away and already in melee range`, target: hostile.name };
   }
@@ -212,8 +247,18 @@ function decideNextTask(snapshot, config) {
     return { type: "hunt_food", reason: "hunger is low and no food is available" };
   }
 
-  if (survival.buildShelter !== false && !hasUsableStarterShelter && hasStonePickaxe && hasStoneWeapon && starterFoodReady && shelterMaterials >= shelterBlockTarget) {
-    return { type: "build_shelter", reason: "shelter materials are ready" };
+  if (!snapshot.isNight && hasUnfinishedStarterShelter && hasStonePickaxe && hasStoneWeapon && starterFoodReady) {
+    if (shelterMaterials > 0) {
+      return { type: "build_shelter", reason: "continuing remembered unfinished starter shelter" };
+    }
+    return { type: "collect_building_materials", reason: `unfinished starter shelter needs more materials (${shelterMaterials}/${shelterBlockTarget})`, targetCount: shelterBlockTarget };
+  }
+
+  if (survival.buildShelter !== false && !hasUsableStarterShelter && hasStonePickaxe && hasStoneWeapon && starterFoodReady) {
+    if (shelterMaterials >= shelterBlockTarget) {
+      return { type: "build_shelter", reason: "shelter materials are ready" };
+    }
+    return { type: "collect_building_materials", reason: `starter shelter materials are ${shelterMaterials}/${shelterBlockTarget}`, targetCount: shelterBlockTarget };
   }
 
   if (snapshot.isNight && hasAny(inventory, SHELTER_BLOCK_ITEMS)) {

@@ -58,6 +58,55 @@ test("hunt_food executable behavior tree uses search-track-approach-attack-colle
   assert.equal(validateExecutableBehaviorTree(tree).ok, true);
 });
 
+test("create_or_open_exit executable behavior tree scans, acts, and verifies", () => {
+  const tree = buildExecutableBehaviorTree("create_or_open_exit", { sourceAgent: "safety_agent" });
+
+  assert.equal(tree.taskType, "create_or_open_exit");
+  assert.equal(tree.priority, taskPriority("create_or_open_exit"));
+  assert.equal(tree.level, "S");
+  assert.deepEqual(tree.nodes.map((node) => node.id), [
+    "scan_exit",
+    "open_exit",
+    "verify_exit"
+  ]);
+  assert.equal(validateExecutableBehaviorTree(tree).ok, true);
+});
+
+test("build shelter behavior tree action gets an extended timeout", () => {
+  const runner = new ExecutableBehaviorTreeRunner();
+  const timeoutMs = runner.nodeTimeoutMs(
+    { id: "build_shelter_execute", kind: "action" },
+    { taskType: "build_shelter" },
+    { config: { survival: { actionTimeoutMs: 25000 } } }
+  );
+
+  assert.equal(timeoutMs, 90000);
+});
+
+test("hostile safety behavior tree timeout outlasts flee-until-clear", () => {
+  const runner = new ExecutableBehaviorTreeRunner();
+  const timeoutMs = runner.nodeTimeoutMs(
+    { id: "evade_hostiles_execute", kind: "action" },
+    { taskType: "evade_hostiles" },
+    { config: { survival: { actionTimeoutMs: 25000, desperateFleeMaxMs: 60000 } } }
+  );
+
+  assert.equal(timeoutMs >= 90000, true);
+});
+
+test("unarmed distant hostile retreat still uses desperate fleeing controls", () => {
+  const controller = Object.create(SurvivalController.prototype);
+  controller.config = { survival: { immediateThreatRadius: 8, panicRetreatMs: 3500 } };
+
+  const plan = controller.hostileRetreatPlan(18, { hasWeapon: false });
+
+  assert.equal(plan.options.skipPath, true);
+  assert.equal(plan.options.allowSprint, true);
+  assert.equal(plan.options.allowJump, true);
+  assert.equal(plan.options.allowUnsafeRetreat, true);
+  assert.equal(plan.options.counterAttackWhileRetreat, false);
+});
+
 test("behavior tree runner fails stuck nodes with a bounded timeout", async () => {
   const failures = [];
   const phases = [];

@@ -81,6 +81,34 @@ test("escapes damaging plant blocks before normal work", () => {
   assert.equal(decision.type, "escape_hazard");
 });
 
+test("escapes falling block entrapment before normal work", () => {
+  const decision = decideNextTask(snapshot({
+    inventory: { dirt: 16 },
+    fallingBlockHazard: {
+      name: "sand",
+      reason: "body_space_occupied_by_falling_block"
+    }
+  }), config);
+
+  assert.equal(decision.type, "escape_hazard");
+  assert.match(decision.reason, /falling block entrapment/);
+});
+
+test("opens a daylight confined-space exit before normal resource work", () => {
+  const decision = decideNextTask(snapshot({
+    inventory: { spruce_log: 16 },
+    terrain: {
+      spatialStructure: {
+        type: "sealed_cell",
+        summary: "space=sealed_cell; connectedStand=2; exits=0; action=create_or_open_exit",
+        recommendedAction: "create_or_open_exit"
+      }
+    }
+  }), config);
+
+  assert.equal(decision.type, "create_or_open_exit");
+});
+
 test("escapes a navigation pit before normal mining or crafting", () => {
   const decision = decideNextTask(snapshot({
     navigationTrap: true,
@@ -126,6 +154,47 @@ test("descends from an elevated platform before collecting wood", () => {
 
   assert.equal(decision.type, "descend_from_platform");
   assert.deepEqual(decision.targetPosition, { x: 4, y: 61, z: 4 });
+});
+
+test("eats before platform descent when health is critical", () => {
+  const decision = decideNextTask(snapshot({
+    health: 6,
+    inventory: { cooked_beef: 1 },
+    terrain: {
+      descent: {
+        needsDescent: true,
+        summary: "elevated platform: water landing 20 blocks below",
+        bestTarget: {
+          waterPosition: { x: 4, y: 60, z: 4 },
+          entryPosition: { x: 4, y: 61, z: 4 },
+          drop: 20
+        }
+      }
+    }
+  }), config);
+
+  assert.equal(decision.type, "eat_food");
+});
+
+test("near-death health holds recovery before platform descent", () => {
+  const decision = decideNextTask(snapshot({
+    health: 0.5,
+    food: 16,
+    inventory: {},
+    terrain: {
+      descent: {
+        needsDescent: true,
+        summary: "elevated platform: water landing 20 blocks below",
+        bestTarget: {
+          waterPosition: { x: 4, y: 60, z: 4 },
+          entryPosition: { x: 4, y: 61, z: 4 },
+          drop: 20
+        }
+      }
+    }
+  }), config);
+
+  assert.equal(decision.type, "recover_starvation");
 });
 
 test("evades nearby daylight hostile mobs before hunger and crafting tasks", () => {
@@ -507,7 +576,6 @@ test("collects building materials before building a starter shelter", () => {
       stick: 4,
       crafting_table: 1,
       stone_pickaxe: 1,
-      cobblestone: 11,
       furnace: 1,
       stone_sword: 1,
       cooked_beef: 18
@@ -532,6 +600,46 @@ test("builds a starter shelter before open-ended exploration", () => {
   assert.equal(decision.type, "build_shelter");
 });
 
+test("continues a remembered unfinished starter shelter before restocking a full build target", () => {
+  const decision = decideNextTask(snapshot({
+    inventory: {
+      oak_planks: 24,
+      stick: 4,
+      crafting_table: 1,
+      stone_pickaxe: 1,
+      cobblestone: 11,
+      furnace: 1,
+      stone_sword: 1,
+      cooked_beef: 18
+    },
+    progress: {
+      hasStarterShelter: false,
+      starterShelterPosition: { x: 10, y: 64, z: 10 }
+    }
+  }), config);
+
+  assert.equal(decision.type, "build_shelter");
+});
+
+test("restocks materials for a remembered unfinished starter shelter when empty", () => {
+  const decision = decideNextTask(snapshot({
+    inventory: {
+      stick: 4,
+      crafting_table: 1,
+      stone_pickaxe: 1,
+      furnace: 1,
+      stone_sword: 1,
+      cooked_beef: 18
+    },
+    progress: {
+      hasStarterShelter: false,
+      starterShelterPosition: { x: 10, y: 64, z: 10 }
+    }
+  }), config);
+
+  assert.equal(decision.type, "collect_building_materials");
+});
+
 test("builds a starter shelter at night when materials are ready", () => {
   const decision = decideNextTask(snapshot({
     isNight: true,
@@ -545,6 +653,23 @@ test("builds a starter shelter at night when materials are ready", () => {
     }
   }), config);
   assert.equal(decision.type, "build_shelter");
+});
+
+test("waits at night instead of gathering missing shelter materials", () => {
+  const decision = decideNextTask(snapshot({
+    isNight: true,
+    inventory: {
+      oak_planks: 16,
+      stick: 4,
+      crafting_table: 1,
+      stone_pickaxe: 1,
+      stone_sword: 1,
+      cooked_beef: 18
+    }
+  }), config);
+
+  assert.equal(decision.type, "wait_out_night");
+  assert.match(decision.reason, /resource gathering/);
 });
 
 test("collects wool for a bed after the house and food reserve are ready", () => {

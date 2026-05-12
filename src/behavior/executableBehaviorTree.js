@@ -10,6 +10,7 @@ const DEFAULT_TASK_PRIORITIES = Object.freeze({
   escape_hazard: 1000,
   escape_pit: 990,
   descend_from_platform: 985,
+  create_or_open_exit: 982,
   eat_food: 980,
   recover_starvation: 970,
   evade_hostiles: 960,
@@ -41,6 +42,7 @@ const TASK_LABELS = Object.freeze({
   escape_hazard: "脱离危险方块",
   escape_pit: "脱离地形陷阱",
   descend_from_platform: "高台下降",
+  create_or_open_exit: "创建或打开出口",
   eat_food: "紧急进食",
   recover_starvation: "饥饿危机稳定",
   evade_hostiles: "规避敌对生物",
@@ -151,6 +153,15 @@ const TREE_TEMPLATES = Object.freeze({
       { id: "approach_edge", label: "移动到安全边缘", kind: "move", handler: "approach_descent_edge", phaseId: "approach_edge" },
       { id: "descend", label: "执行高台下降", kind: "action", handler: "execute_task", phaseId: "controlled_descent" },
       { id: "verify_descent", label: "验证已离开高台", kind: "check", handler: "verify_navigation_safe", phaseId: "verify" }
+    ]
+  },
+  create_or_open_exit: {
+    preconditions: ["confined_space_detected", "daylight_or_safe_to_exit"],
+    postconditions: ["exit_opened_or_position_changed"],
+    nodes: [
+      { id: "scan_exit", label: "扫描出口方向", kind: "sense", handler: "analyze_spatial_exit", phaseId: "scan_environment" },
+      { id: "open_exit", label: "打开或开凿出口", kind: "action", handler: "execute_task", phaseId: "act" },
+      { id: "verify_exit", label: "验证出口已可用", kind: "check", handler: "verify_task_progress", phaseId: "verify" }
     ]
   },
   eat_food: {
@@ -446,6 +457,17 @@ const DEFAULT_ACTION_HANDLERS = {
     controller.recordTaskObservation?.("behavior_tree", "escape route selected", {
       route: analysis?.recommendedAction ?? "controller_escape_pit",
       options: analysis?.routeOptions ?? []
+    });
+    return true;
+  },
+
+  async analyze_spatial_exit({ controller, context }) {
+    const terrain = controller.buildLocalTerrainSnapshot?.(controller.bot?.entity?.position) ?? null;
+    context.spatialStructure = terrain?.spatialStructure ?? null;
+    controller.recordTaskObservation?.("behavior_tree", "spatial exit analysis completed", {
+      type: context.spatialStructure?.type ?? null,
+      recommendedAction: context.spatialStructure?.recommendedAction ?? null,
+      exits: context.spatialStructure?.exitCount ?? null
     });
     return true;
   },
@@ -749,6 +771,24 @@ const DEFAULT_ACTION_HANDLERS = {
       const safeDistance = Math.max(10, (controller.config?.survival?.immediateThreatRadius ?? 8) + 2);
       if (!Number.isFinite(hostileDistance) || hostileDistance > safeDistance) return true;
     }
+    // Resource-collection tasks MUST show inventory change. A position delta
+    // alone (which can happen from being shoved by water current or by simply
+    // walking out of water during a setup step) is not real progress and was
+    // letting the bot loop "collect_stone -> escape water -> success" forever
+    // without ever mining anything.
+    const COLLECTION_TASKS = new Set([
+      "collect_wood",
+      "collect_stone",
+      "collect_building_materials",
+      "collect_wool",
+      "collect_crop_seeds",
+      "mine_advanced_materials",
+      "hunt_food"
+    ]);
+    if (COLLECTION_TASKS.has(tree?.taskType)) {
+      if (after.inventoryFingerprint !== context.before.inventoryFingerprint) return true;
+      return { ok: false, reason: `${tree.taskType}_inventory_unchanged` };
+    }
     return after.positionKey !== context.before.positionKey
       || after.logs !== context.before.logs
       || after.inventoryFingerprint !== context.before.inventoryFingerprint
@@ -890,7 +930,10 @@ class ExecutableBehaviorTreeRunner {
     const baseTimeout = Number(controller?.config?.survival?.actionTimeoutMs ?? 25000);
     const safeBase = Number.isFinite(baseTimeout) ? baseTimeout : 25000;
     if (node.kind === "sense" || node.kind === "setup" || node.kind === "check" || node.kind === "condition") return Math.min(safeBase, 5000);
-    if (tree?.taskType === "wait_out_night" || tree?.taskType === "hold_position") return Math.max(safeBase, 60000);
+    const fleeTimeout = Math.max(60000, Number(controller?.config?.survival?.desperateFleeMaxMs ?? 60000) || 60000) + 15000;
+    if (tree?.taskType === "evade_hostiles") return Math.max(safeBase, fleeTimeout, 90000);
+    if (tree?.taskType === "wait_out_night" || tree?.taskType === "hold_position") return Math.max(safeBase, fleeTimeout, 90000);
+    if (tree?.taskType === "build_shelter" && node.kind === "action") return Math.max(safeBase, 90000);
     if (node.kind === "loop") return Math.max(safeBase, 30000);
     return Math.max(1000, safeBase);
   }

@@ -2,6 +2,7 @@ const ALLOWED_TASKS = [
   "escape_hazard",
   "escape_pit",
   "descend_from_platform",
+  "create_or_open_exit",
   "evade_hostiles",
   "defend_shelter",
   "defend_self",
@@ -47,6 +48,24 @@ const SURVIVAL_SKILLS = [
     success: ["left_platform", "ground_or_water_reached", "normal_survival_route_unblocked"],
     safety: ["prefer_water_landing", "do_not_collect_wood_before_descent", "record_descent_target_in_environment_memory"],
     sourcePatterns: ["test_platform_bootstrap", "environment_first_task_gate"]
+  },
+  {
+    id: "confined_space_exit",
+    category: "safety",
+    icon: "minecraft:oak_door",
+    title: {
+      en_us: "Confined Space Exit",
+      zh_cn: "封闭空间出口"
+    },
+    description: {
+      en_us: "When local spatial awareness reports a sealed cell or enclosed room during daylight, open an existing door or create a small exit before navigation-heavy work.",
+      zh_cn: "当局部空间感知在白天识别到封闭小室或封闭房间时，先打开已有门或创建小出口，再执行依赖导航的工作。"
+    },
+    tasks: ["create_or_open_exit", "explore"],
+    preconditions: ["confined_or_enclosed_space", "daylight_preferred", "no_immediate_hostile"],
+    success: ["exit_opened", "bot_can_leave_local_cell", "normal_resource_route_unblocked"],
+    safety: ["do_not_open_at_night_with_nearby_hostiles", "prefer_existing_doors", "dig_only_small_two_block_exit"],
+    sourcePatterns: ["spatial_structure_recommended_action", "task_feedback_navigation_block"]
   },
   {
     id: "early_stone_tools",

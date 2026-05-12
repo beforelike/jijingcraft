@@ -127,7 +127,7 @@ Dashboard 地址：http://127.0.0.1:3000
 | `MC_PORT` | `8000` | 服务器端口 |
 | `BOT_USERNAME` | `SurvivalBot` | BOT 用户名 |
 | `MC_AUTH` | `offline` | 正版验证用 `microsoft` |
-| `MC_VERSION` | 自动检测 | 无法自动检测时手动设置如 `1.21.11` |
+| `MC_VERSION` | `1.21.1` | 推荐固定为 `1.21.1`；当前 mineflayer 4.37.x 对 1.21.6+ 的 update_health/oxygen/difficulty/abilities 协议解析未补全，会导致 BOT 血量永远显示 20。客户端 LAN 世界请用 1.21.1 客户端打开 |
 | `DASHBOARD_PORT` | `3000` | Dashboard 端口 |
 | `LOW_OXYGEN_THRESHOLD` | `8` | 水下低氧抢占阈值；水中氧气高于该值时不会仅因在水里触发逃生 |
 | `NIGHT_SHELTER_RETURN_MAX_DISTANCE` | `96` | 夜间最多返回多远的已记住庇护所；更远时就地等待或造临时庇护 |

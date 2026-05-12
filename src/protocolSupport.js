@@ -41,6 +41,13 @@ function buildProtocolDiagnosis(pingResult, supportedVersions = getSupportedVers
   };
 }
 
+function resolveMinecraftVersion(configuredVersion, diagnosis) {
+  if (!diagnosis?.supported) return configuredVersion;
+  const serverVersion = diagnosis.serverVersion;
+  if (!serverVersion || serverVersion === "unknown") return configuredVersion;
+  return serverVersion;
+}
+
 async function preflightProtocol(config, logger) {
   const pingResult = await pingServer(config);
   const diagnosis = buildProtocolDiagnosis(pingResult);
@@ -59,5 +66,6 @@ module.exports = {
   buildProtocolDiagnosis,
   getSupportedVersions,
   pingServer,
-  preflightProtocol
+  preflightProtocol,
+  resolveMinecraftVersion
 };

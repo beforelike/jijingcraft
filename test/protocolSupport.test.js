@@ -1,6 +1,6 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { buildProtocolDiagnosis } = require("../src/protocolSupport");
+const { buildProtocolDiagnosis, resolveMinecraftVersion } = require("../src/protocolSupport");
 
 test("marks server version unsupported when protocol library lacks it", () => {
   const diagnosis = buildProtocolDiagnosis(
@@ -21,4 +21,14 @@ test("marks server version supported when it is in the protocol list", () => {
   );
 
   assert.equal(diagnosis.supported, true);
+});
+
+test("resolves stale configured version to the pinged supported server version", () => {
+  const diagnosis = buildProtocolDiagnosis(
+    { version: { name: "1.21.1", protocol: 767 } },
+    ["1.21.1", "1.21.11"]
+  );
+
+  assert.equal(resolveMinecraftVersion("1.21.11", diagnosis), "1.21.1");
+  assert.equal(resolveMinecraftVersion(undefined, diagnosis), "1.21.1");
 });

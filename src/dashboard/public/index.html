@@ -105,6 +105,23 @@
         <small id="terrainSummary">等待扫描</small>
       </div>
       <div class="terrain-grid">
+        <div class="space3d-card">
+          <div class="space3d-heading">
+            <span class="label">3D 空间感知</span>
+            <small id="space3dMeta">等待空间结构</small>
+          </div>
+          <div class="space3d-viewport">
+            <canvas id="space3dCanvas" aria-label="BOT 当前可感知局部空间的 3D 体素图"></canvas>
+          </div>
+          <div class="space3d-legend" aria-label="3D 空间图例">
+            <span><i class="legend-ground"></i>地面</span>
+            <span><i class="legend-safe"></i>可站立</span>
+            <span><i class="legend-block"></i>阻挡</span>
+            <span><i class="legend-water"></i>水</span>
+            <span><i class="legend-hazard"></i>危险</span>
+            <span><i class="legend-bot"></i>BOT</span>
+          </div>
+        </div>
         <div>
           <span class="label">10x10 精确扫描</span>
           <div id="localTerrainMap" class="local-terrain-map"></div>

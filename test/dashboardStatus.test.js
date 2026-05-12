@@ -118,6 +118,25 @@ test("dashboard state publishes sanitized bot status", () => {
         damagingSamples: 0,
         nearbyWater: [{ name: "water", position: new Vec3(4, 60, 4) }],
         nearbyLogs: [],
+        spatialStructure: {
+          type: "sealed_cell",
+          summary: "space=sealed_cell; connectedStand=1; exits=0; blockedSides=4; verticalOpen=2; openSky=false; action=create_or_open_exit",
+          confined: true,
+          enclosed: true,
+          currentBodyOpen: true,
+          currentStandSafe: true,
+          connectedStandCount: 1,
+          reachableSafeStandCount: 1,
+          exitCount: 0,
+          exitDirections: [],
+          blockedSides: 4,
+          cardinalSides: [{ direction: "north", passable: false, safeStand: false, blocked: true, diggable: true, feet: "stone", head: "stone" }],
+          verticalOpenBlocks: 2,
+          openSky: false,
+          airVolume: { connectedAirCells: 2, sideOpeningCount: 0, topOpening: false, bottomOpening: false, boundaryDirections: [] },
+          recommendedAction: "create_or_open_exit",
+          navigationKind: "open"
+        },
         exactLocal: {
           radius: 5,
           width: 11,
@@ -126,6 +145,22 @@ test("dashboard state publishes sanitized bot status", () => {
           waterCount: 3,
           hazardCount: 0,
           groundCounts: [{ name: "stone", count: 80 }],
+          volume: {
+            radius: 5,
+            minDy: -2,
+            maxDy: 5,
+            width: 11,
+            height: 8,
+            totalSamples: 968,
+            airCount: 920,
+            solidCount: 48,
+            waterCount: 0,
+            hazardCount: 0,
+            cells: [
+              { dx: 0, dy: -1, dz: 0, position: new Vec3(1, 63, -3), name: "stone", solid: true, passable: false, diggable: true, water: false, hazard: false },
+              { dx: 1, dy: 0, dz: 0, position: new Vec3(2, 64, -3), name: "spruce_door", solid: false, passable: true, diggable: true, water: false, hazard: false }
+            ]
+          },
           cells: [
             { dx: 0, dz: 0, position: new Vec3(1, 64, -3), ground: "stone", feet: "air", head: "air", safeStand: true, water: false, hazard: false },
             { dx: 1, dz: 0, position: new Vec3(2, 64, -3), ground: "water", feet: "air", head: "air", safeStand: false, water: true, hazard: false }
@@ -239,6 +274,11 @@ test("dashboard state publishes sanitized bot status", () => {
   assert.equal(status.botPerspective.frontBlocks[1].name, "spruce_log");
   assert.equal(status.botPerspective.frontBlocks.length, 12);
   assert.equal(status.world.terrain.exactLocal.width, 11);
+  assert.equal(status.world.terrain.exactLocal.volume.height, 8);
+  assert.equal(status.world.terrain.exactLocal.volume.cells[1].name, "spruce_door");
+  assert.equal(status.world.terrain.spatialStructure.type, "sealed_cell");
+  assert.equal(status.world.terrain.spatialStructure.confined, true);
+  assert.equal(status.world.terrain.spatialStructure.recommendedAction, "create_or_open_exit");
   assert.equal(status.world.terrain.regional.diameter, 200);
   assert.equal(status.world.terrain.descent.bestTarget.drop, 20);
   assert.equal(status.memory.exploration.coarseCellCount, 1);

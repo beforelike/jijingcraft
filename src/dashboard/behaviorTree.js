@@ -8,6 +8,7 @@ const BEHAVIOR_TREE_GROUPS = [
       { id: "escape_hazard", label: "脱离危险方块", kind: "condition", priority: 1 },
       { id: "escape_pit", label: "脱离地形陷阱", kind: "condition", priority: 2 },
       { id: "descend_from_platform", label: "高台下降", kind: "action", priority: 3 },
+      { id: "create_or_open_exit", label: "打开/创建出口", kind: "action", priority: 4 },
       { id: "eat_food", label: "紧急进食", kind: "action", priority: 4 },
       { id: "recover_starvation", label: "饥饿危机稳定", kind: "action", priority: 5 },
       { id: "evade_hostiles", label: "规避敌对生物", kind: "action", priority: 6 },
@@ -90,6 +91,11 @@ const TASK_PHASE_DEFINITIONS = {
     { id: "approach_edge", label: "移动到安全边缘", kind: "move" },
     { id: "controlled_descent", label: "执行高台下降", kind: "action" },
     { id: "verify", label: "验证已离开高台", kind: "check" }
+  ],
+  create_or_open_exit: [
+    { id: "scan_environment", label: "扫描封闭空间", kind: "sense" },
+    { id: "act", label: "打开门或开凿出口", kind: "action" },
+    { id: "verify", label: "验证出口可用", kind: "check" }
   ],
   hunt_food: [
     { id: "prepare", label: "准备武器与状态", kind: "setup" },

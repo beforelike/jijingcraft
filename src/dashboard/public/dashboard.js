@@ -27,6 +27,8 @@ const elements = {
   botViewTargetDistance: document.getElementById("botViewTargetDistance"),
   botViewBlocks: document.getElementById("botViewBlocks"),
   terrainSummary: document.getElementById("terrainSummary"),
+  space3dCanvas: document.getElementById("space3dCanvas"),
+  space3dMeta: document.getElementById("space3dMeta"),
   localTerrainMap: document.getElementById("localTerrainMap"),
   regionalTerrainSummary: document.getElementById("regionalTerrainSummary"),
   descentTargetSummary: document.getElementById("descentTargetSummary"),
@@ -436,9 +438,10 @@ function renderAgentMindMap(status) {
           payloadLine("world.timeOfDay", status.world?.timeOfDay),
           payloadLine("world.isNight", status.world?.isNight),
           payloadLine("navigation.summary", status.world?.navigationAnalysis?.summary, status.world?.navigationTrap ? "地形受限" : "open"),
+          payloadLine("space.structure", status.world?.terrain?.spatialStructure?.summary, "unknown"),
           payloadLine("front.targetEntity", status.botPerspective?.targetEntity?.name, "none")
         ],
-        limit: 8
+        limit: 9
       }]
     }),
     createAgentMapNode({
@@ -872,10 +875,286 @@ function terrainCellText(cell = {}) {
   return "";
 }
 
+function isAirBlockName(name) {
+  const value = String(name ?? "").toLowerCase();
+  return !value || value === "air" || value === "cave_air" || value === "void_air";
+}
+
+function isWaterBlockName(name) {
+  return /water|kelp|seagrass/.test(String(name ?? "").toLowerCase());
+}
+
+function isHazardBlockName(name) {
+  return /lava|fire|campfire|cactus|magma|sweet_berry_bush|powder_snow/.test(String(name ?? "").toLowerCase());
+}
+
+function spaceVoxelKind(cell = {}, layerName = null) {
+  if (isHazardBlockName(layerName)) return "hazard";
+  if (isWaterBlockName(layerName)) return "water";
+  if (layerName && !isAirBlockName(layerName)) return "block";
+  if (cell.hazard) return "hazard";
+  if (cell.water) return "water";
+  return "ground";
+}
+
+function shadeColor(hex, amount) {
+  const color = String(hex).replace("#", "");
+  const value = Number.parseInt(color.length === 3 ? color.split("").map((char) => char + char).join("") : color, 16);
+  if (!Number.isFinite(value)) return hex;
+  const clamp = (channel) => Math.max(0, Math.min(255, channel + amount));
+  const red = clamp((value >> 16) & 255);
+  const green = clamp((value >> 8) & 255);
+  const blue = clamp(value & 255);
+  return `rgb(${red}, ${green}, ${blue})`;
+}
+
+function spacePalette(kind) {
+  const colors = {
+    ground: "#68756d",
+    safe: "#59c17a",
+    block: "#c9b36b",
+    water: "#5fb9c8",
+    hazard: "#e26b6b",
+    bot: "#f2f4ef"
+  };
+  return colors[kind] ?? colors.ground;
+}
+
+function isoPoint(originX, originY, dx, dz, level, tileWidth, tileHeight, blockHeight) {
+  return {
+    x: originX + (dx - dz) * (tileWidth / 2),
+    y: originY + (dx + dz) * (tileHeight / 2) - level * blockHeight
+  };
+}
+
+function drawPolygon(context, points, fill, stroke = "rgba(21, 23, 22, 0.55)") {
+  context.beginPath();
+  points.forEach((point, index) => {
+    if (index === 0) context.moveTo(point.x, point.y);
+    else context.lineTo(point.x, point.y);
+  });
+  context.closePath();
+  context.fillStyle = fill;
+  context.fill();
+  context.strokeStyle = stroke;
+  context.lineWidth = 1;
+  context.stroke();
+}
+
+function drawIsoTile(context, point, tileWidth, tileHeight, color, alpha = 1) {
+  context.save();
+  context.globalAlpha = alpha;
+  drawPolygon(context, [
+    { x: point.x, y: point.y - tileHeight / 2 },
+    { x: point.x + tileWidth / 2, y: point.y },
+    { x: point.x, y: point.y + tileHeight / 2 },
+    { x: point.x - tileWidth / 2, y: point.y }
+  ], color, "rgba(242, 244, 239, 0.12)");
+  context.restore();
+}
+
+function drawIsoVoxel(context, voxel, originX, originY, tileWidth, tileHeight, blockHeight) {
+  const color = spacePalette(voxel.kind);
+  const top = isoPoint(originX, originY, voxel.dx, voxel.dz, voxel.level + 1, tileWidth, tileHeight, blockHeight);
+  const bottom = { x: top.x, y: top.y + blockHeight };
+  const topPoints = [
+    { x: top.x, y: top.y - tileHeight / 2 },
+    { x: top.x + tileWidth / 2, y: top.y },
+    { x: top.x, y: top.y + tileHeight / 2 },
+    { x: top.x - tileWidth / 2, y: top.y }
+  ];
+  const bottomPoints = topPoints.map((point) => ({ x: point.x, y: point.y + blockHeight }));
+  drawPolygon(context, [topPoints[1], bottomPoints[1], bottomPoints[2], topPoints[2]], shadeColor(color, -42));
+  drawPolygon(context, [topPoints[2], bottomPoints[2], bottomPoints[3], topPoints[3]], shadeColor(color, -68));
+  drawPolygon(context, topPoints, shadeColor(color, 18));
+  if (voxel.kind === "water") {
+    context.save();
+    context.globalAlpha = 0.35;
+    drawIsoTile(context, bottom, tileWidth * 0.78, tileHeight * 0.78, "#b7eef7", 1);
+    context.restore();
+  }
+}
+
+function drawBotMarker(context, originX, originY, tileWidth, tileHeight, blockHeight) {
+  const feet = isoPoint(originX, originY, 0, 0, 0, tileWidth, tileHeight, blockHeight);
+  const top = isoPoint(originX, originY, 0, 0, 2, tileWidth, tileHeight, blockHeight);
+  context.save();
+  context.strokeStyle = "rgba(242, 244, 239, 0.95)";
+  context.lineWidth = 3;
+  context.beginPath();
+  context.moveTo(feet.x, feet.y);
+  context.lineTo(top.x, top.y);
+  context.stroke();
+  context.fillStyle = "#f2f4ef";
+  context.beginPath();
+  context.arc(top.x, top.y, 5, 0, Math.PI * 2);
+  context.fill();
+  context.strokeStyle = "rgba(89, 193, 122, 0.95)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.arc(feet.x, feet.y, 10, 0, Math.PI * 2);
+  context.stroke();
+  context.restore();
+}
+
+function viewBasis(status = {}) {
+  const direction = status.botPerspective?.direction ?? {};
+  const x = Number(direction.x) || 0;
+  const z = Number(direction.z) || 0;
+  if (Math.abs(x) >= Math.abs(z)) {
+    const frontX = x < 0 ? -1 : 1;
+    return { frontX, frontZ: 0, rightX: 0, rightZ: frontX };
+  }
+  const frontZ = z < 0 ? -1 : 1;
+  return { frontX: 0, frontZ, rightX: -frontZ, rightZ: 0 };
+}
+
+function toViewCell(dx, dz, status = {}) {
+  const basis = viewBasis(status);
+  const forward = dx * basis.frontX + dz * basis.frontZ;
+  const side = dx * basis.rightX + dz * basis.rightZ;
+  return { dx: side, dz: -forward, forward, side };
+}
+
+function volumeVoxelKind(cell = {}) {
+  if (cell.hazard || isHazardBlockName(cell.name)) return "hazard";
+  if (cell.water || isWaterBlockName(cell.name)) return "water";
+  return "block";
+}
+
+function buildSpaceVoxels(local = {}, status = {}) {
+  const cells = Array.isArray(local?.cells) ? local.cells : [];
+  const volume = local?.volume;
+  const volumeCells = Array.isArray(volume?.cells) ? volume.cells : [];
+  const voxels = [];
+  const safeTiles = [];
+
+  for (const cell of cells) {
+    if (!cell.safeStand) continue;
+    const dx = Number(cell.dx) || 0;
+    const dz = Number(cell.dz) || 0;
+    const view = toViewCell(dx, dz, status);
+    safeTiles.push({ dx: view.dx, dz: view.dz, level: 0 });
+  }
+
+  if (volumeCells.length) {
+    for (const cell of volumeCells) {
+      if (isAirBlockName(cell.name)) continue;
+      const view = toViewCell(Number(cell.dx) || 0, Number(cell.dz) || 0, status);
+      voxels.push({
+        dx: view.dx,
+        dz: view.dz,
+        level: Number(cell.dy) || 0,
+        kind: volumeVoxelKind(cell),
+        name: cell.name
+      });
+    }
+    voxels.sort((left, right) => (left.dx + left.dz) - (right.dx + right.dz) || left.level - right.level || left.dx - right.dx);
+    return { voxels, safeTiles, source: "volume" };
+  }
+
+  for (const cell of cells) {
+    const dx = Number(cell.dx) || 0;
+    const dz = Number(cell.dz) || 0;
+    const view = toViewCell(dx, dz, status);
+    if (!isAirBlockName(cell.ground)) voxels.push({ dx: view.dx, dz: view.dz, level: -1, kind: spaceVoxelKind(cell, cell.ground), name: cell.ground });
+    if (!isAirBlockName(cell.feet)) voxels.push({ dx: view.dx, dz: view.dz, level: 0, kind: spaceVoxelKind(cell, cell.feet), name: cell.feet });
+    if (!isAirBlockName(cell.head)) voxels.push({ dx: view.dx, dz: view.dz, level: 1, kind: spaceVoxelKind(cell, cell.head), name: cell.head });
+    if (cell.hazard && isAirBlockName(cell.feet) && isAirBlockName(cell.head)) voxels.push({ dx: view.dx, dz: view.dz, level: 0, kind: "hazard", name: "hazard" });
+    if (cell.water && isAirBlockName(cell.feet) && isAirBlockName(cell.ground)) voxels.push({ dx: view.dx, dz: view.dz, level: 0, kind: "water", name: "water" });
+  }
+  voxels.sort((left, right) => (left.dx + left.dz) - (right.dx + right.dz) || left.level - right.level || left.dx - right.dx);
+  return { voxels, safeTiles, source: "columns" };
+}
+
+function drawSpaceDirectionGuide(context, originX, originY, radius, tileWidth, tileHeight, blockHeight) {
+  const front = isoPoint(originX, originY, 0, -Math.max(2, radius), 0, tileWidth, tileHeight, blockHeight);
+  const center = isoPoint(originX, originY, 0, 0, 0, tileWidth, tileHeight, blockHeight);
+  context.save();
+  context.strokeStyle = "rgba(242, 244, 239, 0.66)";
+  context.fillStyle = "rgba(242, 244, 239, 0.82)";
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(center.x, center.y);
+  context.lineTo(front.x, front.y);
+  context.stroke();
+  context.font = "600 12px Segoe UI, sans-serif";
+  context.textAlign = "center";
+  context.fillText("前方", front.x, front.y - 8);
+  context.restore();
+}
+
+function renderSpace3d(status, local = null, spatial = null) {
+  const canvas = elements.space3dCanvas;
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(320, Math.floor(rect.width || 640));
+  const height = Math.max(240, Math.floor(rect.height || 360));
+  const ratio = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
+    canvas.width = Math.floor(width * ratio);
+    canvas.height = Math.floor(height * ratio);
+  }
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+
+  const cells = Array.isArray(local?.cells) ? local.cells : [];
+  if (!cells.length) {
+    setText(elements.space3dMeta, "暂无 3D 空间数据");
+    context.fillStyle = "rgba(242, 244, 239, 0.68)";
+    context.font = "14px Segoe UI, sans-serif";
+    context.textAlign = "center";
+    context.fillText("暂无 3D 空间数据", width / 2, height / 2);
+    return;
+  }
+
+  const radius = Number(local.radius) || Math.floor(Math.sqrt(cells.length) / 2) || 5;
+  const tileWidth = Math.max(20, Math.min(34, Math.floor(width / Math.max(14, radius * 3.2))));
+  const tileHeight = Math.max(10, Math.floor(tileWidth / 2));
+  const blockHeight = Math.max(12, Math.floor(tileWidth * 0.62));
+  const originX = width / 2;
+  const originY = Math.min(height - 70, height / 2 + radius * tileHeight * 0.55 + 44);
+  const { voxels, safeTiles, source } = buildSpaceVoxels(local, status);
+
+  const gradient = context.createLinearGradient(0, 0, 0, height);
+  gradient.addColorStop(0, "rgba(95, 185, 200, 0.08)");
+  gradient.addColorStop(1, "rgba(21, 23, 22, 0)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, width, height);
+
+  for (const tile of safeTiles) {
+    const point = isoPoint(originX, originY, tile.dx, tile.dz, tile.level, tileWidth, tileHeight, blockHeight);
+    drawIsoTile(context, point, tileWidth * 0.74, tileHeight * 0.74, spacePalette("safe"), 0.28);
+  }
+  for (const voxel of voxels) drawIsoVoxel(context, voxel, originX, originY, tileWidth, tileHeight, blockHeight);
+  drawSpaceDirectionGuide(context, originX, originY, radius, tileWidth, tileHeight, blockHeight);
+  drawBotMarker(context, originX, originY, tileWidth, tileHeight, blockHeight);
+
+  context.save();
+  context.fillStyle = "rgba(21, 23, 22, 0.58)";
+  context.fillRect(12, 12, Math.min(width - 24, 420), 56);
+  context.fillStyle = "rgba(242, 244, 239, 0.92)";
+  context.font = "600 13px Segoe UI, sans-serif";
+  context.textAlign = "left";
+  context.fillText(`space: ${spatial?.type ?? "unknown"} · exits ${spatial?.exitCount ?? 0} · connected ${spatial?.connectedStandCount ?? 0}`, 24, 34);
+  context.fillStyle = "rgba(174, 183, 173, 0.92)";
+  context.font = "12px Segoe UI, sans-serif";
+  context.fillText(`${source === "volume" ? `volume=${local.volume?.height ?? 0} layers` : "column fallback"} · action=${spatial?.recommendedAction ?? "none"}`, 24, 54);
+  context.restore();
+
+  setText(
+    elements.space3dMeta,
+    `${spatial?.type ?? "unknown"} · ${source === "volume" ? `${local.volume?.height ?? 0}层` : "三层"} · ${(spatial?.exitDirections ?? []).join("/") || "no exit"}`
+  );
+}
+
 function renderTerrain(status) {
   const terrain = status.world?.terrain ?? null;
   if (!terrain) {
     setText(elements.terrainSummary, "暂无扫描");
+    setText(elements.space3dMeta, "暂无空间结构");
+    renderSpace3d(status, null, null);
     clearAndEmpty(elements.localTerrainMap, "暂无 10x10 数据");
     clearAndEmpty(elements.regionalTerrainSummary, "暂无 200x200 数据");
     clearAndEmpty(elements.descentTargetSummary, "暂无下降目标");
@@ -885,10 +1164,12 @@ function renderTerrain(status) {
   const local = terrain.exactLocal;
   const regional = terrain.regional;
   const descent = terrain.descent;
+  const spatial = terrain.spatialStructure;
   setText(
     elements.terrainSummary,
-    `local ${local?.width ?? 0}x${local?.width ?? 0} · regional ${regional?.diameter ?? 0}x${regional?.diameter ?? 0} · water ${regional?.waterCells ?? 0}`
+    `local ${local?.width ?? 0}x${local?.width ?? 0} · regional ${regional?.diameter ?? 0}x${regional?.diameter ?? 0} · space ${spatial?.type ?? "unknown"} · exits ${spatial?.exitCount ?? 0}`
   );
+  renderSpace3d(status, local, spatial);
 
   elements.localTerrainMap.replaceChildren();
   if (local?.cells?.length) {
@@ -907,6 +1188,8 @@ function renderTerrain(status) {
 
   elements.regionalTerrainSummary.replaceChildren();
   const regionalRows = [
+    [`空间`, `${spatial?.type ?? "unknown"} · ${spatial?.confined ? "confined" : "open"} · action ${spatial?.recommendedAction ?? "none"}`],
+    [`出口`, `${(spatial?.exitDirections ?? []).join(" / ") || "none"} · connected ${spatial?.connectedStandCount ?? 0} · blocked ${spatial?.blockedSides ?? 0}`],
     [`采样`, `${regional?.sampleCount ?? 0} cells · step ${regional?.step ?? "--"}`],
     [`安全`, `${regional?.safeCells ?? 0} safe · ${regional?.waterCells ?? 0} water · ${regional?.hazardCells ?? 0} hazard`],
     [`主要方块`, (regional?.topBlocks ?? []).slice(0, 6).map((entry) => `${entry.name}:${entry.count}`).join(" / ") || "--"],

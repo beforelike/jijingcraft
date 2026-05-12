@@ -121,6 +121,199 @@ test("manual emergency movement keeps normal walking speed", async () => {
   assert.equal(controlStates.some((entry) => entry.name === "forward" && entry.value === true), true);
 });
 
+test("manual hostile retreat can sprint when explicitly allowed", async () => {
+  const controlStates = [];
+  const controller = createController({
+    wait: async () => {
+      controller.bot.entity.position = new Vec3(-6, 64, 0);
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    lookAt: async () => {},
+    setControlState: (name, value) => controlStates.push({ name, value }),
+    clearControlStates: () => controlStates.push({ name: "clear", value: true })
+  };
+  controller.nearestEntity = () => null;
+  controller.findForwardSafeStandPosition = () => true;
+
+  const retreated = await controller.manualRetreatFrom({ name: "zombie", position: new Vec3(2, 64, 0) }, 50, {
+    allowSprint: true,
+    requiredDistance: 1
+  });
+
+  assert.equal(retreated, true);
+  assert.equal(controlStates.some((entry) => entry.name === "sprint" && entry.value === true), true);
+  assert.equal(controlStates.some((entry) => entry.name === "jump" && entry.value === true), false);
+});
+
+test("manual hostile retreat can jump when explicitly allowed", async () => {
+  const controlStates = [];
+  const controller = createController({
+    wait: async () => {
+      controller.bot.entity.position = new Vec3(-6, 64, 0);
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    lookAt: async () => {},
+    setControlState: (name, value) => controlStates.push({ name, value }),
+    clearControlStates: () => controlStates.push({ name: "clear", value: true })
+  };
+  controller.nearestEntity = () => null;
+  controller.findForwardSafeStandPosition = () => true;
+
+  const retreated = await controller.manualRetreatFrom({ name: "zombie", position: new Vec3(2, 64, 0) }, 50, {
+    allowSprint: true,
+    allowJump: true,
+    requiredDistance: 1
+  });
+
+  assert.equal(retreated, true);
+  assert.equal(controlStates.some((entry) => entry.name === "sprint" && entry.value === true), true);
+  assert.equal(controlStates.some((entry) => entry.name === "jump" && entry.value === true), true);
+});
+
+test("manual hostile retreat tries a lateral safe step when direct retreat is blocked", async () => {
+  const controlStates = [];
+  let lookedAt = null;
+  const controller = createController({
+    wait: async () => {
+      controller.bot.entity.position = new Vec3(0, 64, 1);
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    lookAt: async (target) => { lookedAt = target; },
+    setControlState: (name, value) => controlStates.push({ name, value }),
+    clearControlStates: () => controlStates.push({ name: "clear", value: true })
+  };
+  controller.nearestEntity = () => null;
+  controller.findForwardSafeStandPosition = () => false;
+  controller.findEmergencyRetreatDirection = () => new Vec3(0, 0, 1);
+
+  await controller.manualRetreatFrom({ name: "zombie", position: new Vec3(1, 64, 0) }, 50, { requiredDistance: 1 });
+
+  assert.equal(controlStates.some((entry) => entry.name === "forward" && entry.value === true), true);
+  assert.ok(lookedAt.z > 0);
+});
+
+test("manual hostile retreat digs soft blocks blocking the escape path", async () => {
+  const dug = [];
+  let corridorOpened = false;
+  const controller = createController({
+    wait: async () => {
+      controller.bot.entity.position = new Vec3(-4, 64, 0);
+    },
+    findForwardSafeStandPosition: () => false,
+    digBlockAt: async (position, options) => {
+      dug.push({ position, options });
+      corridorOpened = true;
+      return true;
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: {},
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (!corridorOpened && blockPosition.x === -1 && blockPosition.y === 64 && blockPosition.z === 0) {
+        return { name: "dirt", position: blockPosition, boundingBox: "block", diggable: true };
+      }
+      return { name: "air", position: blockPosition, boundingBox: "empty", diggable: false };
+    },
+    lookAt: async () => {},
+    setControlState: () => {},
+    clearControlStates: () => {}
+  };
+  controller.nearestEntity = () => null;
+
+  const retreated = await controller.manualRetreatFrom({ name: "zombie", position: new Vec3(2, 64, 0) }, 50, { requiredDistance: 1 });
+
+  assert.equal(retreated, true);
+  assert.equal(dug.length, 1);
+  assert.deepEqual(dug[0].position, new Vec3(-1, 64, 0));
+  assert.equal(dug[0].options.resetOnTimeout, false);
+});
+
+test("manual hostile retreat does not dig hard blocks as a quick escape corridor", async () => {
+  let dug = false;
+  const controller = createController({
+    wait: async () => {
+      controller.bot.entity.position = new Vec3(0, 64, 2);
+    },
+    findForwardSafeStandPosition: () => false,
+    findEmergencyRetreatDirection: () => new Vec3(0, 0, 1),
+    digBlockAt: async () => {
+      dug = true;
+      return true;
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: {},
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (blockPosition.x === -1 && blockPosition.y === 64 && blockPosition.z === 0) {
+        return { name: "stone", position: blockPosition, boundingBox: "block", diggable: true };
+      }
+      return { name: "air", position: blockPosition, boundingBox: "empty", diggable: false };
+    },
+    lookAt: async () => {},
+    setControlState: () => {},
+    clearControlStates: () => {}
+  };
+  controller.nearestEntity = () => null;
+
+  await controller.manualRetreatFrom({ name: "zombie", position: new Vec3(2, 64, 0) }, 50, { requiredDistance: 1 });
+
+  assert.equal(dug, false);
+});
+
+test("manual unarmed retreat prefers desperate separation when hostile is point blank", async () => {
+  const originalNow = Date.now;
+  let now = 0;
+  let lookedAt = null;
+  let lateralUsed = false;
+  let desperateUsed = false;
+  const controller = createController({
+    wait: async () => {
+      now = 100;
+      controller.bot.entity.position = new Vec3(-4, 64, 0);
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    lookAt: async (target) => { lookedAt = target; },
+    setControlState: () => {},
+    clearControlStates: () => {}
+  };
+  controller.nearestEntity = () => null;
+  controller.findForwardSafeStandPosition = () => false;
+  controller.findEmergencyRetreatDirection = () => {
+    lateralUsed = true;
+    return new Vec3(0, 0, 1);
+  };
+  controller.findDesperateRetreatDirection = () => {
+    desperateUsed = true;
+    return new Vec3(-1, 0, 0);
+  };
+
+  Date.now = () => now;
+  try {
+    await controller.manualRetreatFrom({ name: "zombie", position: new Vec3(1, 64, 0) }, 50, {
+      allowUnsafeRetreat: true,
+      requiredDistance: 1
+    });
+  } finally {
+    Date.now = originalNow;
+  }
+
+  assert.equal(lateralUsed, false);
+  assert.equal(desperateUsed, true);
+  assert.ok(lookedAt.x < 0);
+});
+
 test("manual emergency movement restores position when direct movement invalidates entity state", async () => {
   const controller = createController({
     wait: async () => {
@@ -198,6 +391,51 @@ test("task feedback records repeated action failures as a blocked task", () => {
   assert.ok(status.blockedTasks[0].recoveryTasks.includes("explore"));
 });
 
+test("task feedback does not block a remembered unfinished starter shelter", () => {
+  const controller = createController({
+    progressState: {
+      hasStarterShelter: false,
+      starterShelterPosition: { x: 8, y: 64, z: 8 }
+    }
+  });
+  controller.currentDecisionType = "build_shelter";
+  controller.bot = { entity: { position: new Vec3(8, 64, 8) } };
+
+  controller.recordTaskFeedbackFailure("build_shelter", "postcondition_failed", new Vec3(8, 64, 8), { taskType: "build_shelter", target: "partial_starter_shelter" });
+  controller.recordTaskFeedbackFailure("build_shelter", "postcondition_failed", new Vec3(8, 64, 8), { taskType: "build_shelter", target: "partial_starter_shelter" });
+  controller.recordTaskFeedbackFailure("build_shelter", "postcondition_failed", new Vec3(8, 64, 8), { taskType: "build_shelter", target: "partial_starter_shelter" });
+
+  const status = controller.getTaskFeedbackStatus();
+  assert.equal(status.recentFailures.length, 3);
+  assert.equal(status.blockedTasks.length, 0);
+});
+
+test("task feedback unblocks build_shelter when the rule wants to resume an unfinished shelter", () => {
+  const controller = createController();
+  controller.taskFeedback.blockedTasks.build_shelter = {
+    taskType: "build_shelter",
+    reason: "postcondition_failed",
+    failureCount: 3,
+    recoveryTasks: ["explore"],
+    expiresAt: new Date(Date.now() + 60000).toISOString()
+  };
+
+  const decision = controller.selectDecisionWithTaskFeedback({
+    isNight: false,
+    inventory: { oak_planks: 24 },
+    progress: {
+      hasStarterShelter: false,
+      starterShelterPosition: { x: 8, y: 64, z: 8 }
+    }
+  }, {
+    type: "build_shelter",
+    reason: "continuing remembered unfinished starter shelter"
+  });
+
+  assert.equal(decision.type, "build_shelter");
+  assert.equal(controller.getTaskFeedbackStatus().blockedTasks.length, 0);
+});
+
 test("busy watchdog blocks collectStone when heartbeat masks no movement progress", () => {
   const controller = createController();
   controller.config.survival.taskNoProgressMs = 5000;
@@ -224,7 +462,7 @@ test("busy watchdog blocks collectStone when heartbeat masks no movement progres
   assert.equal(interrupted, true);
   assert.equal(progress.status, "stuck");
   assert.equal(progress.interrupted, true);
-  assert.equal(feedback.lastEvent.reason, "no_progress_stuck");
+  assert.equal(feedback.lastEvent.reason, "no_movement_or_inventory_progress");
   assert.equal(feedback.blockedTasks[0].taskType, "collect_stone");
   assert.equal(feedback.blockedTasks[0].recoveryTasks.includes("explore"), true);
   assert.equal(controller.taskTrace.status, "failed");
@@ -267,6 +505,44 @@ test("task feedback recovery success clears the original blocked task", () => {
   assert.equal(status.recentFailures.some((event) => event.taskType === "collect_wood"), false);
   assert.equal(status.lastEvent.type, "recovery_success");
   assert.equal(status.lastEvent.recoveryTask, "explore");
+});
+
+test("collect stone recovery explore does not unblock without a safe stone target", () => {
+  const controller = createController();
+  controller.hasCollectStoneRecoveryTarget = () => false;
+  controller.taskFeedback.blockedTasks.collect_stone = {
+    taskType: "collect_stone",
+    reason: "postcondition_failed",
+    failureCount: 3,
+    recoveryTasks: ["explore", "collect_wood"],
+    expiresAt: new Date(Date.now() + 60000).toISOString()
+  };
+
+  const cleared = controller.recordTaskFeedbackRecoverySuccess("collect_stone", "explore", { reason: "moved_to_new_area" });
+  const status = controller.getTaskFeedbackStatus();
+
+  assert.equal(cleared, false);
+  assert.equal(status.blockedTasks.length, 1);
+  assert.equal(status.blockedTasks[0].taskType, "collect_stone");
+});
+
+test("collect stone recovery explore unblocks after finding a safe stone target", () => {
+  const controller = createController();
+  controller.hasCollectStoneRecoveryTarget = () => true;
+  controller.taskFeedback.blockedTasks.collect_stone = {
+    taskType: "collect_stone",
+    reason: "postcondition_failed",
+    failureCount: 3,
+    recoveryTasks: ["explore", "collect_wood"],
+    expiresAt: new Date(Date.now() + 60000).toISOString()
+  };
+
+  const cleared = controller.recordTaskFeedbackRecoverySuccess("collect_stone", "explore", { reason: "found_surface_stone" });
+  const status = controller.getTaskFeedbackStatus();
+
+  assert.equal(cleared, true);
+  assert.equal(status.blockedTasks.length, 0);
+  assert.equal(status.lastEvent.type, "recovery_success");
 });
 
 test("local mode log is published with controller state", () => {
@@ -568,6 +844,84 @@ test("critical starvation recovery holds at night when no immediate food exists"
   assert.equal(recovered, false);
   assert.equal(held, true);
   assert.equal(explored, false);
+});
+
+test("near-death recovery with adequate hunger does not chase distant food", async () => {
+  let held = false;
+  let hunted = false;
+  let explored = false;
+  const controller = createController({
+    isNight: () => false,
+    markTaskPhase: () => {},
+    recordTaskObservation: () => {},
+    forageNearbyFood: async () => false,
+    huntFood: async () => {
+      hunted = true;
+      return false;
+    },
+    explore: async () => {
+      explored = true;
+      return false;
+    },
+    holdPositionSafely: async () => {
+      held = true;
+      return false;
+    },
+    recordActionFailure: () => {}
+  });
+  controller.config.survival.lowFood = 14;
+  controller.bot = {
+    health: 0.5,
+    food: 16,
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: {},
+    inventory: { items: () => [] },
+    clearControlStates: () => {},
+    pathfinder: { setGoal: () => {} },
+    pvp: { stop: () => {} }
+  };
+
+  const recovered = await controller.recoverFromStarvation();
+
+  assert.equal(recovered, false);
+  assert.equal(held, true);
+  assert.equal(hunted, false);
+  assert.equal(explored, false);
+});
+
+test("near-death recovery is not preempted by platform descent", async () => {
+  let descended = false;
+  let recovered = false;
+  const controller = createController({
+    buildPlatformDescentSnapshot: () => ({
+      needsDescent: true,
+      bestTarget: {
+        entryPosition: new Vec3(4, 61, 4),
+        waterPosition: new Vec3(4, 60, 4)
+      },
+      summary: "elevated platform: water landing 20 blocks below"
+    }),
+    descendFromPlatform: async () => {
+      descended = true;
+      return true;
+    },
+    recoverFromStarvation: async () => {
+      recovered = true;
+      return false;
+    }
+  });
+  controller.bot = {
+    health: 0.5,
+    food: 16,
+    entity: { position: new Vec3(0, 70, 0) },
+    inventory: { items: () => [] }
+  };
+
+  const result = await controller.executePrimitive({ type: "recover_starvation" });
+
+  assert.equal(result, false);
+  assert.equal(recovered, true);
+  assert.equal(descended, false);
 });
 
 test("starvation recovery tries hunt_food before explore when not blocked", async () => {
@@ -1168,6 +1522,45 @@ test("leaveWaterForTask requires the bot to actually leave water", async () => {
   const leftWater = await controller.leaveWaterForTask("explore");
 
   assert.equal(leftWater, false);
+});
+
+test("water exit stand rejects unreachable dry blocks above a solid ceiling", () => {
+  const controller = createController();
+  controller.bot = {
+    blockAt: (position) => {
+      const blockPosition = position.floored();
+      if (blockPosition.x === 0 && blockPosition.z === 0 && (blockPosition.y === 60 || blockPosition.y === 61)) {
+        return { name: "water", position: blockPosition, boundingBox: "empty", diggable: false };
+      }
+      if (blockPosition.x === 0 && blockPosition.z === 0 && blockPosition.y === 63) {
+        return { name: "stone", position: blockPosition, boundingBox: "block", diggable: true };
+      }
+      if (blockPosition.x === 1 && blockPosition.z === 0 && blockPosition.y === 59) {
+        return { name: "dirt", position: blockPosition, boundingBox: "block", diggable: true };
+      }
+      return { name: "air", position: blockPosition, boundingBox: "empty", diggable: false };
+    }
+  };
+
+  assert.equal(controller.isWaterExitStandAccessible(new Vec3(0, 60, 0), new Vec3(0, 64, 0)), false);
+  assert.equal(controller.isWaterExitStandAccessible(new Vec3(0, 60, 0), new Vec3(1, 60, 0)), true);
+});
+
+test("resource task water exit failure immediately blocks repeating collection", async () => {
+  const controller = createController();
+  controller.isBodyInWater = () => true;
+  controller.findNearbyWaterExitStand = () => null;
+  controller.swimTowardAir = async () => true;
+  controller.bot = {
+    oxygenLevel: 20,
+    entity: { position: new Vec3(0, 60, 0) }
+  };
+
+  const leftWater = await controller.leaveWaterForTask("collect_stone");
+
+  assert.equal(leftWater, false);
+  assert.equal(controller.isTaskFeedbackBlocked("collect_stone"), true);
+  assert.equal(controller.taskFeedback.blockedTasks.collect_stone.reason, "water_exit_failed");
 });
 
 test("explore does not continue dry exploration while still underwater", async () => {
@@ -1883,6 +2276,30 @@ test("holdPositionSafely holds distant open-night hostile pressure", async () =>
 
   assert.equal(retreatedFrom, null);
   assert.equal(waitCount > 0, true);
+});
+
+test("holdPositionSafely does not reset motion during active flee", async () => {
+  let resetMotion = false;
+  let scanned = false;
+  const controller = createController({
+    hostileFleeUntilClearBusy: true,
+    resetMotion: () => { resetMotion = true; },
+    nearestEntity: () => {
+      scanned = true;
+      return null;
+    }
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [] },
+    setControlState() {}
+  };
+
+  const result = await controller.holdPositionSafely();
+
+  assert.equal(result, true);
+  assert.equal(resetMotion, false);
+  assert.equal(scanned, false);
 });
 
 test("starvation damage does not trigger unknown damage reposition", async () => {
@@ -3735,6 +4152,355 @@ test("falling block entrapment detects sand in body space", () => {
   assert.equal(hazard.reason, "body_space_occupied_by_falling_block");
 });
 
+test("falling block entrapment treats any solid body obstruction as suffocation risk", () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({ name, position, boundingBox, diggable: boundingBox === "block" });
+  const controller = createController({ isDamagingBlock: () => false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (controller.sameBlockPosition(blockPosition, new Vec3(0, 64, 0))) return makeBlock("dirt", blockPosition);
+      if (blockPosition.y === 65) return makeBlock("air", blockPosition, "empty");
+      return makeBlock("stone", blockPosition);
+    }
+  };
+
+  const hazard = controller.findFallingBlockEntrapment(new Vec3(0, 64, 0));
+  assert.equal(hazard.name, "dirt");
+  assert.equal(hazard.role, "feet");
+  assert.equal(hazard.reason, "body_space_obstructed_by_solid_block");
+});
+
+test("realtime falling block escape preempts an existing emergency", async () => {
+  let escaped = false;
+  const controller = createController({
+    findFallingBlockEntrapment: () => ({ name: "sand", reason: "body_space_occupied_by_falling_block" }),
+    markCurrentActionInterrupted: () => {},
+    clearQueuedPlanningWork: () => {},
+    cancelCollectTask: async () => {},
+    escapeFallingBlockEntrapment: async () => {
+      escaped = true;
+      return true;
+    }
+  });
+  controller.emergencyBusy = true;
+  controller.hazardEscapeBusy = false;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    setControlState: () => {}
+  };
+
+  controller.handleRealtimeSafetyTick();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(escaped, true);
+});
+
+test("falling block escape cancels active flee before pathing to safety", async () => {
+  const makeBlock = (name, position, boundingBox = "block") => ({ name, position, boundingBox, diggable: boundingBox === "block" });
+  let gotoOptions = null;
+  const controller = createController({
+    resetMotion: () => {},
+    stopActiveNavigation: () => {},
+    digBlockAt: async () => true,
+    isSafeStandPosition: () => false,
+    hasFallingBlockCollapseRiskNearStand: () => true,
+    findNearbyDamagingBlock: () => null,
+    findNearbySafeStandPosition: () => new Vec3(2, 64, 0),
+    gotoNear: async (x, y, z, range, options) => {
+      gotoOptions = { x, y, z, range, options };
+      return true;
+    }
+  });
+  controller.hostileFleeUntilClearBusy = true;
+  controller.hostileFleeRunId = 2;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (controller.sameBlockPosition(blockPosition, new Vec3(0, 64, 0))) return makeBlock("grass_block", blockPosition);
+      return makeBlock("air", blockPosition, "empty");
+    }
+  };
+
+  const escaped = await controller.escapeFallingBlockEntrapment({ name: "grass_block", reason: "body_space_obstructed_by_solid_block" });
+
+  assert.equal(escaped, true);
+  assert.equal(controller.hostileFleeUntilClearBusy, false);
+  assert.equal(controller.hostileFleeRunId, 3);
+  assert.equal(gotoOptions.options.label, "falling_block_escape");
+  assert.equal(gotoOptions.options.allowDuringHostileFlee, true);
+});
+
+test("realtime safety tick preserves emergency sprint window", () => {
+  const controlStates = [];
+  const controller = createController({
+    findFallingBlockEntrapment: () => null,
+    shouldEscapeForLowOxygen: () => false
+  });
+  controller.emergencySprintUntil = Date.now() + 1000;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    setControlState: (name, value) => controlStates.push({ name, value })
+  };
+
+  controller.handleRealtimeSafetyTick();
+
+  assert.equal(controlStates.some((entry) => entry.name === "sprint" && entry.value === false), false);
+});
+
+test("realtime safety tick clears sprint outside emergency window", () => {
+  const controlStates = [];
+  const controller = createController({
+    findFallingBlockEntrapment: () => null,
+    shouldEscapeForLowOxygen: () => false
+  });
+  controller.emergencySprintUntil = Date.now() - 1;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    setControlState: (name, value) => controlStates.push({ name, value })
+  };
+
+  controller.handleRealtimeSafetyTick();
+
+  assert.equal(controlStates.some((entry) => entry.name === "sprint" && entry.value === false), true);
+});
+
+test("realtime safety tick starts unarmed flee before hostile damage", async () => {
+  const zombie = { id: 1, name: "zombie", position: new Vec3(2, 64, 0) };
+  let fledFrom = null;
+  const controller = createController({
+    findFallingBlockEntrapment: () => null,
+    shouldEscapeForLowOxygen: () => false,
+    nearestEntity: () => zombie,
+    fleeUntilNoHostiles: async (hostile, options) => {
+      fledFrom = { hostile, options };
+      return true;
+    },
+    recordModeLog: () => {},
+    publishControllerState: () => {}
+  });
+  controller.lifecycleState = "active";
+  controller.emergencyBusy = false;
+  controller.hazardEscapeBusy = false;
+  controller.hostileFleeUntilClearBusy = false;
+  controller.realtimeHostileFleeStartedAt = 0;
+  controller.bot = {
+    health: 20,
+    entities: { 1: zombie },
+    inventory: { items: () => [] },
+    entity: { position: new Vec3(0, 64, 0) },
+    setControlState: () => {}
+  };
+
+  controller.handleRealtimeSafetyTick();
+  await Promise.resolve();
+
+  assert.equal(fledFrom?.hostile, zombie);
+  assert.equal(fledFrom?.options.reason, "realtime_hostile_chase");
+  assert.ok(controller.actionInterruptedUntil > 0);
+});
+
+test("realtime low oxygen preempts hostile flee startup", async () => {
+  let escaped = false;
+  let hostileFleeStarted = false;
+  const controller = createController({
+    findFallingBlockEntrapment: () => null,
+    shouldEscapeForLowOxygen: () => true,
+    maybeStartRealtimeHostileFlee: () => {
+      hostileFleeStarted = true;
+      return true;
+    },
+    cancelCollectTask: async () => {},
+    escapeLowOxygen: async () => {
+      escaped = true;
+      return true;
+    },
+    clearQueuedPlanningWork: () => {},
+    recordModeLog: () => {},
+    publishControllerState: () => {}
+  });
+  controller.emergencyBusy = false;
+  controller.hazardEscapeBusy = false;
+  controller.lastOxygenEscapeAt = 0;
+  controller.bot = {
+    oxygenLevel: 1,
+    entity: { position: new Vec3(0, 62, 0) },
+    setControlState: () => {}
+  };
+
+  controller.handleRealtimeSafetyTick();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(escaped, true);
+  assert.equal(hostileFleeStarted, false);
+});
+
+test("escapeLowOxygen cancels active flee before pathing to air", async () => {
+  let gotoCalled = false;
+  const controller = createController({
+    cancelCollectTask: async () => {},
+    resetMotion: () => {},
+    breakOverheadIceForAir: async () => false,
+    swimTowardAir: async () => false,
+    isBodyInWater: (position) => position?.x === 0,
+    isLowOxygen: () => true,
+    findNearbyWaterExitStand: () => new Vec3(3, 64, 0),
+    findNearbySafeStandPosition: () => null,
+    findLastSafeStandFallback: () => null,
+    gotoNear: async () => {
+      gotoCalled = true;
+      controller.bot.entity.position = new Vec3(3, 64, 0);
+      return true;
+    }
+  });
+  controller.hostileFleeUntilClearBusy = true;
+  controller.hostileFleeRunId = 4;
+  controller.bot = {
+    oxygenLevel: 1,
+    entity: { position: new Vec3(0, 62, 0) },
+    pvp: { stop: () => {} },
+    setControlState: () => {}
+  };
+
+  const escaped = await controller.escapeLowOxygen({ reason: "test" });
+
+  assert.equal(escaped, true);
+  assert.equal(gotoCalled, true);
+  assert.equal(controller.hostileFleeUntilClearBusy, false);
+  assert.equal(controller.hostileFleeRunId, 5);
+});
+
+test("flee safe window scavenges one nearby building block", async () => {
+  const dirtPosition = new Vec3(1, 63, 0);
+  let dug = null;
+  let collected = false;
+  const controller = createController({
+    shouldEscapeForLowOxygen: () => false,
+    digBlockAt: async (position, options) => {
+      dug = { position, options };
+      return true;
+    },
+    collectNearbyItems: async () => {
+      collected = true;
+      return true;
+    }
+  });
+  controller.config.survival.immediateThreatRadius = 8;
+  controller.config.survival.shelterBlockTarget = 8;
+  controller.mcData = { blocksByName: { dirt: { id: 1 }, grass_block: { id: 2 } } };
+  controller.hostileFleeUntilClearBusy = true;
+  controller.hostileFleeRunId = 7;
+  controller.lastFleeScavengeAt = 0;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [] },
+    setControlState: () => {},
+    findBlocks: () => [dirtPosition],
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : new Vec3(Math.floor(position.x), Math.floor(position.y), Math.floor(position.z));
+      if (blockPosition.x === dirtPosition.x && blockPosition.y === dirtPosition.y && blockPosition.z === dirtPosition.z) {
+        return { name: "dirt", position: blockPosition, boundingBox: "block", diggable: true };
+      }
+      return { name: "air", position: blockPosition, boundingBox: "empty", diggable: false };
+    }
+  };
+
+  const scavenged = await controller.maybeScavengeDuringFlee(null, { fleeRunId: 7, clearSince: Date.now() - 1200 });
+
+  assert.equal(scavenged, true);
+  assert.deepEqual(dug.position, dirtPosition);
+  assert.equal(dug.options.resetOnTimeout, false);
+  assert.equal(collected, true);
+});
+
+test("flee scavenge skips when a hostile is still close", async () => {
+  let searched = false;
+  const controller = createController({
+    shouldEscapeForLowOxygen: () => false,
+    findFleeScavengeBlock: () => {
+      searched = true;
+      return null;
+    }
+  });
+  controller.config.survival.immediateThreatRadius = 8;
+  controller.config.survival.shelterBlockTarget = 8;
+  controller.hostileFleeUntilClearBusy = true;
+  controller.hostileFleeRunId = 2;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [] }
+  };
+  const zombie = { name: "zombie", position: new Vec3(5, 64, 0) };
+
+  const scavenged = await controller.maybeScavengeDuringFlee(zombie, { fleeRunId: 2 });
+
+  assert.equal(scavenged, false);
+  assert.equal(searched, false);
+});
+
+test("craft item skips without resetting motion during hostile flee", async () => {
+  let resetMotion = false;
+  const controller = createController({
+    resetMotion: () => { resetMotion = true; }
+  });
+  controller.hostileFleeUntilClearBusy = true;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+
+  const result = await controller.craftItem("wooden_axe", 1, false);
+
+  assert.equal(result, false);
+  assert.equal(resetMotion, false);
+});
+
+test("collect blocks skips search during hostile flee", async () => {
+  const controller = createController();
+  controller.hostileFleeUntilClearBusy = true;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    findBlocks: () => {
+      throw new Error("collect search should not run during flee");
+    }
+  };
+
+  const result = await controller.collectBlocks(["oak_log"], 1, 16, { action: "collect_wood" });
+
+  assert.equal(result.collected, false);
+  assert.equal(result.interruptedByThreat, true);
+});
+
+test("unfinished shelter memory does not unblock water recovery failures", () => {
+  const controller = createController({
+    hasUnfinishedStarterShelterMemory: () => true
+  });
+  controller.taskFeedback.blockedTasks.build_shelter = {
+    reason: "water_exit_failed",
+    recoveryTasks: ["explore"]
+  };
+
+  const decision = controller.selectDecisionWithTaskFeedback({ progress: { starterShelterPosition: { x: 0, y: 64, z: 0 } } }, { type: "build_shelter", reason: "continuing shelter" });
+
+  assert.equal(decision.type, "explore");
+  assert.equal(controller.taskFeedback.blockedTasks.build_shelter.reason, "water_exit_failed");
+});
+
+test("water recovery feedback chooses hazard stabilization before repeating explore", () => {
+  const controller = createController();
+  const decision = controller.fallbackDecisionForBlockedTask({
+    isBodyInWater: true,
+    inventory: { dirt: 8 }
+  }, { type: "build_shelter" }, {
+    reason: "water_exit_failed",
+    recoveryTasks: ["explore"]
+  });
+
+  assert.equal(decision.type, "escape_hazard");
+  assert.match(decision.reason, /failed in water/);
+});
+
 test("excavateMineProbe does not dig downward through beach sand", async () => {
   const makeBlock = (name, position, boundingBox = "block") => ({ name, position, boundingBox, diggable: boundingBox === "block" });
   const controller = createController({
@@ -4299,6 +5065,230 @@ test("evadeHostiles uses a short retreat window before fighting close threats", 
   assert.equal(defended, hostile);
 });
 
+test("evadeHostiles keeps fleeing instead of fighting while unarmed", async () => {
+  const hostile = { id: 1, name: "zombie", position: new Vec3(1, 64, 0) };
+  let fled = null;
+  let defended = false;
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1000,
+        placeBlockTimeoutMs: 1000,
+        threatRadius: 20,
+        safeModeThreatRadius: 28,
+        immediateThreatRadius: 8,
+        criticalHealth: 8,
+        panicRetreatMs: 3500,
+        evadeDistance: 24
+      }
+    },
+    nearestEntity: (_predicate, radius) => hostile.position.distanceTo(controller.bot.entity.position) <= radius ? hostile : null,
+    panicRetreatFrom: async () => { throw new Error("unexpected one-shot retreat"); },
+    fleeUntilNoHostiles: async (target, options) => { fled = { target, options }; return true; },
+    defendSelf: async () => { defended = true; }
+  });
+  controller.bot = {
+    health: 20,
+    entity: { position: new Vec3(0, 64, 0) },
+    inventory: { items: () => [] }
+  };
+
+  await controller.evadeHostiles();
+
+  assert.equal(defended, false);
+  assert.equal(fled.target, hostile);
+  assert.equal(fled.options.reason, "evade_hostiles");
+});
+
+test("fleeUntilNoHostiles keeps retreating until no hostile remains", async () => {
+  const hostile = { id: 1, name: "zombie", position: new Vec3(1, 64, 0) };
+  let scanCount = 0;
+  let retreatCount = 0;
+  const controller = createController({
+    nearestChasingHostile: () => (++scanCount <= 3 ? hostile : null),
+    panicRetreatFrom: async () => {
+      retreatCount++;
+      controller.bot.entity.position = new Vec3(controller.bot.entity.position.x + 4, 64, 0);
+      return true;
+    },
+    wait: async () => {}
+  });
+  controller.config.survival.safeModeThreatRadius = 28;
+  controller.config.survival.immediateThreatRadius = 8;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+
+  const clear = await controller.fleeUntilNoHostiles(hostile, { reason: "test", maxFleeMs: 2000, clearStableMs: 0 });
+
+  assert.equal(clear, true);
+  assert.equal(retreatCount, 2);
+});
+
+test("fleeUntilNoHostiles keeps moving through a transient clear scan", async () => {
+  const originalNow = Date.now;
+  let now = 0;
+  const hostile = { id: 1, name: "zombie", position: new Vec3(1, 64, 0) };
+  let scanCount = 0;
+  let retreatCount = 0;
+  const controller = createController({
+    nearestChasingHostile: () => (++scanCount === 1 ? hostile : null),
+    panicRetreatFrom: async () => {
+      retreatCount++;
+      return true;
+    },
+    wait: async (milliseconds = 100) => { now += milliseconds; },
+    resetMotion: () => {}
+  });
+  controller.config.survival.safeModeThreatRadius = 28;
+  controller.config.survival.immediateThreatRadius = 8;
+  controller.bot = {
+    health: 4,
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+
+  Date.now = () => now;
+  try {
+    const clear = await controller.fleeUntilNoHostiles(hostile, { reason: "test", maxFleeMs: 2000, clearStableMs: 250 });
+    assert.equal(clear, true);
+  } finally {
+    Date.now = originalNow;
+  }
+
+  assert.ok(retreatCount > 1);
+});
+
+test("panicRetreatFrom can preserve motion during protected flee chunks", async () => {
+  let resetMotion = false;
+  const controller = createController({
+    resetMotion: () => { resetMotion = true; },
+    findSafeRetreatTargetFrom: () => null,
+    manualRetreatFrom: async () => true
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+
+  const retreated = await controller.panicRetreatFrom({ name: "zombie", position: new Vec3(2, 64, 0) }, 500, { preserveMotion: true });
+
+  assert.equal(retreated, true);
+  assert.equal(resetMotion, false);
+});
+
+test("fleeUntilNoHostiles joins an active flee instead of replacing it", async () => {
+  const controller = createController();
+  controller.config.survival.safeModeThreatRadius = 28;
+  controller.config.survival.immediateThreatRadius = 8;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: {}
+  };
+  controller.hostileFleeUntilClearBusy = true;
+  controller.hostileFleeRunId = 9;
+  controller.nearestChasingHostile = () => null;
+  controller.wait = async () => {
+    controller.hostileFleeUntilClearBusy = false;
+  };
+
+  const result = await controller.fleeUntilNoHostiles({ name: "zombie", position: new Vec3(2, 64, 0) }, { reason: "hold_position" });
+
+  assert.equal(result, true);
+  assert.equal(controller.hostileFleeRunId, 9);
+});
+
+test("unsafe retreat direction prefers maximum separation", () => {
+  const controller = createController();
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    blockAt: (position) => (position.y <= 63 ? { name: "grass_block", boundingBox: "block" } : { name: "air", boundingBox: "empty" })
+  };
+  controller.isPassableBlockAt = (position) => position.y >= 64;
+  controller.findNearbyDamagingBlock = () => null;
+  controller.isDamagingBlock = () => false;
+  controller.isWaterBlock = () => false;
+
+  const direction = controller.findBestRetreatDirection(new Vec3(0, 64, 0), new Vec3(-1, 64, 0));
+
+  assert.ok(direction.x > 0.9);
+  assert.ok(Math.abs(direction.z) < 0.2);
+});
+
+test("control tick holds normal decisions while flee-until-clear is active", async () => {
+  let published = false;
+  let executed = false;
+  const controller = createController({
+    publishControllerState: () => { published = true; },
+    execute: async () => { executed = true; }
+  });
+  controller.busy = false;
+  controller.emergencyBusy = false;
+  controller.hostileFleeUntilClearBusy = true;
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) }
+  };
+
+  await controller.tick();
+
+  assert.equal(published, true);
+  assert.equal(executed, false);
+});
+
+test("gotoNear skips non-retreat pathing while flee-until-clear is active", async () => {
+  let pathfinderCalled = false;
+  const controller = createController({
+    hostileFleeUntilClearBusy: true,
+    ensureEmergencyShelterExit: async () => { throw new Error("unexpected shelter exit work"); },
+    hasNearbyDoor: () => false,
+    rememberSafeStandPosition: () => {}
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    pathfinder: {
+      goto: async () => { pathfinderCalled = true; }
+    }
+  };
+
+  const reached = await controller.gotoNear(10, 64, 0, 1, { label: "collect_wood_target" });
+
+  assert.equal(reached, false);
+  assert.equal(pathfinderCalled, false);
+});
+
+test("panicRetreatFrom fails when the hostile remains within unsafe distance", async () => {
+  const hostile = { id: 1, name: "zombie", position: new Vec3(5, 64, 0) };
+  const controller = createController({
+    config: {
+      memory: { enabled: false, knownBlockSearchRadius: 96 },
+      survival: {
+        actionTimeoutMs: 1000,
+        placeBlockTimeoutMs: 1000,
+        immediateThreatRadius: 8,
+        safeModeThreatRadius: 28,
+        panicRetreatMs: 500
+      }
+    },
+    findSafeRetreatTargetFrom: () => new Vec3(4, 64, 0),
+    gotoNear: async (x, y, z) => {
+      controller.bot.entity.position = new Vec3(x, y, z);
+      return true;
+    },
+    manualRetreatFrom: async () => false,
+    markTaskPhase: () => {}
+  });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    entities: { [hostile.id]: hostile },
+    clearControlStates() {},
+    pathfinder: { setGoal() {} },
+    pvp: { stop() {} }
+  };
+
+  const escaped = await controller.panicRetreatFrom(hostile, 500);
+
+  assert.equal(escaped, false);
+});
+
 test("evadeHostiles does not chase a far retreat target when night pressure is not immediate", async () => {
   const hostile = { id: 1, name: "spider", position: new Vec3(20, 64, 0) };
   let retreatCall = null;
@@ -4395,9 +5385,7 @@ test("holdPositionSafely seals shelter blocks instead of retreating from distant
 });
 
 test("holdPositionSafely retreats from near night threats within the emergency buffer", async () => {
-  const originalNow = Date.now;
-  let now = 0;
-  let retreatCount = 0;
+  let fled = null;
   const hostile = {
     name: "zombie",
     position: new Vec3(8.8, 64, 0)
@@ -4419,13 +5407,8 @@ test("holdPositionSafely retreats from near night threats within the emergency b
     hasUsableStarterShelterAt: () => false,
     nearestEntity: () => hostile,
     equipBestWeapon: async () => {},
-    wait: async (ms) => {
-      now += ms;
-    },
-    panicRetreatFrom: async () => {
-      retreatCount++;
-      return true;
-    }
+    panicRetreatFrom: async () => { throw new Error("unexpected one-shot retreat"); },
+    fleeUntilNoHostiles: async (target, options) => { fled = { target, options }; return true; }
   });
   controller.bot = {
     entity: { position: new Vec3(0, 64, 0) },
@@ -4433,14 +5416,10 @@ test("holdPositionSafely retreats from near night threats within the emergency b
     setControlState() {}
   };
 
-  Date.now = () => now;
-  try {
-    await controller.holdPositionSafely();
-  } finally {
-    Date.now = originalNow;
-  }
+  await controller.holdPositionSafely();
 
-  assert.equal(retreatCount, 1);
+  assert.equal(fled.target, hostile);
+  assert.equal(fled.options.reason, "hold_position");
 });
 
 test("escapeHazard stabilizes generic hazards without random hostile evasion", async () => {
@@ -4559,6 +5538,92 @@ test("analyzeNavigationSituation identifies an elevated support column descent",
   assert.equal(analysis.recommendedAction, "controlled_descent");
   assert.equal(analysis.supportBlock.name, "stone");
   assert.equal(analysis.safeSupportDescent, true);
+});
+
+test("buildSpatialStructureSnapshot recognizes a sealed one-block enclosure", () => {
+  const controller = createController();
+  const stoneAt = (position) => ({ name: "stone", position, boundingBox: "block", diggable: true });
+  const airAt = (position) => ({ name: "air", position, boundingBox: "empty", diggable: false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    time: { timeOfDay: 1000 },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : position;
+      if (blockPosition.y === 63) return stoneAt(blockPosition);
+      if (blockPosition.y === 66) return stoneAt(blockPosition);
+      if ((blockPosition.y === 64 || blockPosition.y === 65) && Math.abs(blockPosition.x) + Math.abs(blockPosition.z) === 1) return stoneAt(blockPosition);
+      return airAt(blockPosition);
+    }
+  };
+
+  const exactLocal = controller.buildExactLocalBlockScan(controller.bot.entity.position);
+  const spatial = controller.buildSpatialStructureSnapshot(controller.bot.entity.position, exactLocal);
+
+  assert.equal(exactLocal.volume.height, 8);
+  assert.ok(exactLocal.volume.cells.some((cell) => cell.dx === 0 && cell.dy === -1 && cell.dz === 0 && cell.name === "stone"));
+  assert.ok(exactLocal.volume.cells.some((cell) => cell.dx === 0 && cell.dy === 2 && cell.dz === 0 && cell.name === "stone"));
+  assert.equal(spatial.type, "sealed_cell");
+  assert.equal(spatial.confined, true);
+  assert.equal(spatial.enclosed, true);
+  assert.equal(spatial.currentBodyOpen, true);
+  assert.equal(spatial.connectedStandCount, 1);
+  assert.equal(spatial.exitCount, 0);
+  assert.equal(spatial.blockedSides, 4);
+  assert.equal(spatial.verticalOpenBlocks, 2);
+  assert.equal(spatial.openSky, false);
+  assert.equal(spatial.recommendedAction, "create_or_open_exit");
+});
+
+test("buildSpatialStructureSnapshot distinguishes interior room space from real exits", () => {
+  const controller = createController();
+  const stoneAt = (position) => ({ name: "stone", position, boundingBox: "block", diggable: true });
+  const airAt = (position) => ({ name: "air", position, boundingBox: "empty", diggable: false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    time: { timeOfDay: 1000 },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : position;
+      if (blockPosition.y === 63) return stoneAt(blockPosition);
+      if (blockPosition.y === 66) return stoneAt(blockPosition);
+      if ((blockPosition.y === 64 || blockPosition.y === 65) && (Math.abs(blockPosition.x) === 2 || Math.abs(blockPosition.z) === 2)) return stoneAt(blockPosition);
+      return airAt(blockPosition);
+    }
+  };
+
+  const terrain = controller.buildLocalTerrainSnapshot(controller.bot.entity.position);
+
+  assert.equal(terrain.spatialStructure.type, "enclosed_room");
+  assert.equal(terrain.spatialStructure.connectedStandCount, 9);
+  assert.equal(terrain.spatialStructure.exitCount, 0);
+  assert.equal(terrain.spatialStructure.enclosed, true);
+  assert.equal(terrain.spatialStructure.recommendedAction, "create_or_open_exit");
+});
+
+test("buildSpatialStructureSnapshot reports open terrain exits and sky access", () => {
+  const controller = createController();
+  const grassAt = (position) => ({ name: "grass_block", position, boundingBox: "block", diggable: true });
+  const airAt = (position) => ({ name: "air", position, boundingBox: "empty", diggable: false });
+  controller.bot = {
+    entity: { position: new Vec3(0, 64, 0) },
+    time: { timeOfDay: 1000 },
+    blockAt: (position) => {
+      const blockPosition = position.floored ? position.floored() : position;
+      if (blockPosition.y === 63) return grassAt(blockPosition);
+      return airAt(blockPosition);
+    }
+  };
+
+  const terrain = controller.buildLocalTerrainSnapshot(controller.bot.entity.position);
+
+  assert.equal(terrain.spatialStructure.type, "open_area");
+  assert.equal(terrain.spatialStructure.confined, false);
+  assert.equal(terrain.spatialStructure.openSky, true);
+  assert.equal(terrain.spatialStructure.exitCount, 4);
+  assert.ok(terrain.spatialStructure.connectedStandCount > 20);
+  assert.equal(terrain.exactLocal.volume.height, 8);
+  assert.ok(terrain.exactLocal.volume.airCount > terrain.exactLocal.volume.solidCount);
+  assert.ok(terrain.exactLocal.volume.cells.some((cell) => cell.dx === 0 && cell.dy === -1 && cell.dz === 0 && cell.name === "grass_block"));
+  assert.deepEqual(terrain.spatialStructure.exitDirections, ["east", "north", "south", "west"]);
 });
 
 test("analyzeNavigationSituation treats underground mining pockets as surface recovery traps", () => {

@@ -6,7 +6,7 @@ const { LlmCallRecorder } = require("./llm/callRecorder");
 const { createOpenAIClient } = require("./llm/client");
 const { LlmPlanner } = require("./llm/planner");
 const { createLogger } = require("./logger");
-const { preflightProtocol } = require("./protocolSupport");
+const { preflightProtocol, resolveMinecraftVersion } = require("./protocolSupport");
 const { computeReconnectDelay } = require("./reconnect");
 const { createPythonBrainServiceManager } = require("./services/pythonBrainServiceManager");
 const { SurvivalController } = require("./survival/SurvivalController");
@@ -134,7 +134,7 @@ function runBotSession() {
 
     bot.on("respawn", () => {
       dashboardState.setConnection({ state: "connected", message: "bot respawned" });
-      controller.handleLifecycleReset?.("bot_respawn", { pauseMs: 2500, interruptMs: 4000 });
+      controller.handleLifecycleReset?.("bot_respawn", { pauseMs: 0, interruptMs: 1500 });
       logger.info("bot respawned; survival loop continues");
     });
 
@@ -188,7 +188,12 @@ async function main() {
   let reconnectAttempt = 0;
   while (!stopping) {
     try {
-      await preflightProtocol(config, logger);
+      const diagnosis = await preflightProtocol(config, logger);
+      const resolvedVersion = resolveMinecraftVersion(config.version, diagnosis);
+      if (resolvedVersion !== config.version) {
+        logger.warn(`minecraft_version=resolved_from_ping; configured=${config.version ?? "auto"}; server=${resolvedVersion}`);
+        config.version = resolvedVersion;
+      }
       const result = await runBotSession();
       if (stopping) break;
 

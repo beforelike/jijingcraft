@@ -116,6 +116,41 @@ function normalizeBotPerspective(view = null) {
 
 function normalizeTerrainScan(terrain = null) {
   if (!terrain || typeof terrain !== "object") return null;
+  const spatialStructure = terrain.spatialStructure ? {
+    type: terrain.spatialStructure.type ?? null,
+    summary: terrain.spatialStructure.summary ?? null,
+    confined: Boolean(terrain.spatialStructure.confined),
+    enclosed: Boolean(terrain.spatialStructure.enclosed),
+    currentBodyOpen: Boolean(terrain.spatialStructure.currentBodyOpen),
+    currentStandSafe: Boolean(terrain.spatialStructure.currentStandSafe),
+    connectedStandCount: Number(terrain.spatialStructure.connectedStandCount) || 0,
+    reachableSafeStandCount: Number(terrain.spatialStructure.reachableSafeStandCount) || 0,
+    exitCount: Number(terrain.spatialStructure.exitCount) || 0,
+    exitDirections: Array.isArray(terrain.spatialStructure.exitDirections) ? terrain.spatialStructure.exitDirections.slice(0, 4) : [],
+    blockedSides: Number(terrain.spatialStructure.blockedSides) || 0,
+    cardinalSides: Array.isArray(terrain.spatialStructure.cardinalSides)
+      ? terrain.spatialStructure.cardinalSides.slice(0, 4).map((side) => ({
+        direction: side.direction ?? null,
+        passable: Boolean(side.passable),
+        safeStand: Boolean(side.safeStand),
+        blocked: Boolean(side.blocked),
+        diggable: Boolean(side.diggable),
+        feet: side.feet ?? null,
+        head: side.head ?? null
+      }))
+      : [],
+    verticalOpenBlocks: Number(terrain.spatialStructure.verticalOpenBlocks) || 0,
+    openSky: Boolean(terrain.spatialStructure.openSky),
+    airVolume: terrain.spatialStructure.airVolume ? {
+      connectedAirCells: Number(terrain.spatialStructure.airVolume.connectedAirCells) || 0,
+      sideOpeningCount: Number(terrain.spatialStructure.airVolume.sideOpeningCount) || 0,
+      topOpening: Boolean(terrain.spatialStructure.airVolume.topOpening),
+      bottomOpening: Boolean(terrain.spatialStructure.airVolume.bottomOpening),
+      boundaryDirections: Array.isArray(terrain.spatialStructure.airVolume.boundaryDirections) ? terrain.spatialStructure.airVolume.boundaryDirections.slice(0, 4) : []
+    } : null,
+    recommendedAction: terrain.spatialStructure.recommendedAction ?? null,
+    navigationKind: terrain.spatialStructure.navigationKind ?? null
+  } : null;
   const exactLocal = terrain.exactLocal ? {
     radius: Number(terrain.exactLocal.radius) || 0,
     width: Number(terrain.exactLocal.width) || 0,
@@ -124,6 +159,30 @@ function normalizeTerrainScan(terrain = null) {
     waterCount: Number(terrain.exactLocal.waterCount) || 0,
     hazardCount: Number(terrain.exactLocal.hazardCount) || 0,
     groundCounts: Array.isArray(terrain.exactLocal.groundCounts) ? terrain.exactLocal.groundCounts.slice(0, 12) : [],
+    volume: terrain.exactLocal.volume ? {
+      radius: Number(terrain.exactLocal.volume.radius) || 0,
+      minDy: Number(terrain.exactLocal.volume.minDy) || 0,
+      maxDy: Number(terrain.exactLocal.volume.maxDy) || 0,
+      width: Number(terrain.exactLocal.volume.width) || 0,
+      height: Number(terrain.exactLocal.volume.height) || 0,
+      totalSamples: Number(terrain.exactLocal.volume.totalSamples) || 0,
+      airCount: Number(terrain.exactLocal.volume.airCount) || 0,
+      solidCount: Number(terrain.exactLocal.volume.solidCount) || 0,
+      waterCount: Number(terrain.exactLocal.volume.waterCount) || 0,
+      hazardCount: Number(terrain.exactLocal.volume.hazardCount) || 0,
+      cells: Array.isArray(terrain.exactLocal.volume.cells) ? terrain.exactLocal.volume.cells.slice(0, 1800).map((cell) => ({
+        dx: Number(cell.dx) || 0,
+        dy: Number(cell.dy) || 0,
+        dz: Number(cell.dz) || 0,
+        position: serializePosition(cell.position),
+        name: cell.name ?? null,
+        solid: Boolean(cell.solid),
+        passable: Boolean(cell.passable),
+        diggable: Boolean(cell.diggable),
+        water: Boolean(cell.water),
+        hazard: Boolean(cell.hazard)
+      })) : []
+    } : null,
     cells: Array.isArray(terrain.exactLocal.cells) ? terrain.exactLocal.cells.slice(0, 121).map((cell) => ({
       dx: Number(cell.dx) || 0,
       dz: Number(cell.dz) || 0,
@@ -180,6 +239,7 @@ function normalizeTerrainScan(terrain = null) {
     damagingSamples: Number(terrain.damagingSamples) || 0,
     nearbyWater: Array.isArray(terrain.nearbyWater) ? terrain.nearbyWater.slice(0, 8).map((entry) => ({ name: entry.name, position: serializePosition(entry.position) })) : [],
     nearbyLogs: Array.isArray(terrain.nearbyLogs) ? terrain.nearbyLogs.slice(0, 8).map((entry) => ({ name: entry.name, position: serializePosition(entry.position) })) : [],
+    spatialStructure,
     exactLocal,
     regional,
     descent
